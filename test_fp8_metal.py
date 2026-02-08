@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""
+Test suite for fp8_metal: FP8 Metal kernel accuracy and performance.
+
+Tests both implementations:
+  - C++ extension (fp8_metal) — works via buffer copies
+  - Native torch.mps.compile_shader (fp8_mps_native) — zero-copy, preferred
+
+Tests:
+  1. Exhaustive FP8 decode: all 256 uint8 values vs Python reference
+  2. Matmul accuracy (C++ ext): FP8 scaled_mm vs FP32 reference
+  3. Matmul accuracy (native): FP8 scaled_mm vs FP32 reference
+  4. Quantize/dequantize roundtrip
+  5. Vecmat (M=1) kernel path
+  6. Performance: all paths at realistic dimensions
+  7. Monkey-patch install/uninstall
+"""
+
+import time
+import sys
+import os
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def fp8_e4m3fn_decode_reference(bits: int) -> float:
+    """Pure Python reference decode for e4m3fn format."""
+    if (bits & 0x7F) == 0x7F:  # NaN → 0
+        return 0.0
+    sign = (bits >> 7) & 1
+    exp_bits = (bits >> 3) & 0xF
+    mant_bits = bits & 0x7
+
+    if exp_bits == 0:
+        value = (mant_bits / 8.0) * (2.0 ** -6)
+    else:
+        mantissa = 1.0 + mant_bits / 8.0
+        exponent = exp_bits - 7
+        value = mantissa * (2.0 ** exponent)
+
+    return -value if sign else value
+
+
+def test_exhaustive_fp8_decode():
+    """Test all 256 FP8 bit patterns against reference."""
+    print("=" * 60)
+    print("Test 1: Exhaustive FP8 decode (256 patterns) — Native")
+    print("=" * 60)
+
+    import fp8_mps_native
+
+    all_bits = torch.arange(256, dtype=torch.uint8)
+    scale = torch.tensor([1.0])
+
+    decoded = fp8_mps_native.fp8_dequantize(all_bits, scale)
+    decoded_cpu = decoded.cpu().float()
+    ref = torch.tensor([fp8_e4m3fn_decode_reference(i) for i in range(256)])
+
+    max_abs_err = 0.0
+    max_rel_err = 0.0
+    errors = []
+
+    for i in range(256):
+        metal_val = decoded_cpu[i].item()
+        ref_val = ref[i].item()
+        abs_err = abs(metal_val - ref_val)
+        rel_err = abs_err / (abs(ref_val) + 1e-10) if ref_val != 0 else abs_err
+
+        if abs_err > 0.01:
+            errors.append((i, ref_val, metal_val, abs_err))
+        max_abs_err = max(max_abs_err, abs_err)
+        if ref_val != 0:
+            max_rel_err = max(max_rel_err, rel_err)
+
+    print(f"  Max absolute error: {max_abs_err:.6f}")
+    print(f"  Max relative error: {max_rel_err:.6f}")
+    if errors:
+        print(f"  Errors > 0.01 ({len(errors)}):")
+        for bits, ref_v, metal_v, err in errors[:10]:
+            print(f"    bits={bits:3d} (0x{bits:02X}): ref={ref_v:12.6f}, metal={metal_v:12.6f}, err={err:.6f}")
+
+    passed = max_abs_err < 0.5
+    print(f"  RESULT: {'PASS' if passed else 'FAIL'}")
+    print()
+    return passed
+
+
+def test_matmul_accuracy_cpp():
+    """Test FP8 scaled matmul (C++ ext) against FP32 reference."""
+    print("=" * 60)
+    print("Test 2: Matmul accuracy — C++ extension")
+    print("=" * 60)
+
+    import fp8_metal
+
+    M, K, N = 64, 256, 128
+    A_f32 = torch.randn(M, K)
+    B_f32 = torch.randn(N, K)
+    ref = A_f32 @ B_f32.T
+
+    A_q, A_scale = fp8_metal.fp8_quantize(A_f32)
+    B_q, B_scale = fp8_metal.fp8_quantize(B_f32)
+    result = fp8_metal.fp8_scaled_mm(A_q, B_q, A_scale, B_scale)
+    result_cpu = result.cpu().float()
+
+    diff = result_cpu - ref
+    rmse = torch.sqrt((diff ** 2).mean()).item()
+    ref_rms = torch.sqrt((ref ** 2).mean()).item()
+    rel_rmse = rmse / ref_rms if ref_rms > 0 else rmse
+
+    print(f"  Relative RMSE: {rel_rmse:.4%}")
+    print(f"  Max abs error: {diff.abs().max().item():.4f}")
+    passed = rel_rmse < 0.15
+    print(f"  RESULT: {'PASS' if passed else 'FAIL'}")
+    print()
+    return passed
+
+
+def test_matmul_accuracy_native():
+    """Test FP8 scaled matmul (native) against FP32 reference."""
+    print("=" * 60)
+    print("Test 3: Matmul accuracy — Native (fused + fast)")
+    print("=" * 60)
+
+    import fp8_mps_native
+
+    M, K, N = 64, 256, 128
+    A_f32 = torch.randn(M, K)
+    B_f32 = torch.randn(N, K)
+    ref = A_f32 @ B_f32.T
+
+    A_q, A_scale = fp8_mps_native.fp8_quantize(A_f32)
+    B_q, B_scale = fp8_mps_native.fp8_quantize(B_f32)
+
+    # Test fused kernel
+    result_fused = fp8_mps_native.fp8_scaled_mm(A_q, B_q, A_scale, B_scale)
+    diff_fused = result_fused.cpu().float() - ref
+    rel_rmse_fused = torch.sqrt((diff_fused ** 2).mean()).item() / torch.sqrt((ref ** 2).mean()).item()
+
+    # Test fast (dequant + native matmul)
+    result_fast = fp8_mps_native.fp8_scaled_mm_fast(A_q, B_q, A_scale, B_scale)
+    diff_fast = result_fast.cpu().float() - ref
+    rel_rmse_fast = torch.sqrt((diff_fast ** 2).mean()).item() / torch.sqrt((ref ** 2).mean()).item()
+
+    # Test auto selector
+    result_auto = fp8_mps_native.fp8_scaled_mm_auto(A_q, B_q, A_scale, B_scale)
+
+    print(f"  Fused kernel RMSE:  {rel_rmse_fused:.4%}")
+    print(f"  Fast path RMSE:     {rel_rmse_fast:.4%}")
+    print(f"  Auto output shape:  {result_auto.shape}")
+
+    passed = rel_rmse_fused < 0.15 and rel_rmse_fast < 0.15
+    print(f"  RESULT: {'PASS' if passed else 'FAIL'}")
+    print()
+    return passed
+
+
+def test_quantize_roundtrip():
+    """Test quantize → dequantize roundtrip (native)."""
+    print("=" * 60)
+    print("Test 4: Quantize/dequantize roundtrip — Native")
+    print("=" * 60)
+
+    import fp8_mps_native
+
+    x = torch.tensor([0.0, 1.0, -1.0, 0.5, -0.5, 100.0, -100.0, 448.0])
+    q, scale = fp8_mps_native.fp8_quantize(x)
+    d = fp8_mps_native.fp8_dequantize(q, scale)
+    d_cpu = d.cpu().float()
+
+    max_err = (d_cpu - x).abs().max().item()
+    print(f"  Input:     {x.tolist()}")
+    print(f"  Roundtrip: {d_cpu.tolist()}")
+    print(f"  Max error: {max_err:.4f}")
+
+    passed = max_err < 50.0
+    print(f"  RESULT: {'PASS' if passed else 'FAIL'}")
+    print()
+    return passed
+
+
+def test_vecmat_native():
+    """Test M=1 vecmat kernel path (native)."""
+    print("=" * 60)
+    print("Test 5: Vecmat (M=1) — Native")
+    print("=" * 60)
+
+    import fp8_mps_native
+
+    K, N = 512, 256
+    x = torch.randn(1, K)
+    W = torch.randn(N, K)
+    ref = x @ W.T
+
+    x_q, x_s = fp8_mps_native.fp8_quantize(x)
+    W_q, W_s = fp8_mps_native.fp8_quantize(W)
+
+    result = fp8_mps_native.fp8_scaled_mm(x_q, W_q, x_s, W_s)
+    result_cpu = result.cpu().float()
+
+    diff = result_cpu - ref
+    rel_rmse = torch.sqrt((diff ** 2).mean()).item() / torch.sqrt((ref ** 2).mean()).item()
+
+    print(f"  Relative RMSE: {rel_rmse:.4%}")
+    print(f"  Output shape: {result.shape}")
+    passed = rel_rmse < 0.15
+    print(f"  RESULT: {'PASS' if passed else 'FAIL'}")
+    print()
+    return passed
+
+
+def test_performance():
+    """Benchmark all FP8 paths at realistic dimensions."""
+    print("=" * 60)
+    print("Test 6: Performance benchmarks (realistic dimensions)")
+    print("=" * 60)
+
+    import fp8_mps_native
+
+    warmup = 5
+    iters = 20
+
+    for label, M, K, N in [
+        ("Single-token 4096", 1, 4096, 4096),
+        ("Single-token 14336", 1, 14336, 14336),
+        ("Batch-4 4096", 4, 4096, 4096),
+    ]:
+        print(f"\n  --- {label} (M={M}, K={K}, N={N}) ---")
+
+        # FP8 data on MPS
+        A_fp8 = torch.randint(0, 128, (M, K), dtype=torch.uint8, device="mps")
+        B_fp8 = torch.randint(0, 128, (N, K), dtype=torch.uint8, device="mps")
+        sa = torch.tensor([0.01])
+        sb = torch.tensor([0.01])
+
+        # FP16 native baseline
+        A_f16 = torch.randn(M, K, dtype=torch.float16, device="mps")
+        B_f16 = torch.randn(N, K, dtype=torch.float16, device="mps")
+        for _ in range(warmup):
+            _ = A_f16 @ B_f16.T
+        torch.mps.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            _ = A_f16 @ B_f16.T
+        torch.mps.synchronize()
+        fp16_ms = (time.perf_counter() - t0) / iters * 1000
+
+        # CPU FP8 fallback (realistic: move to CPU, float, half, back to MPS, matmul)
+        A_cpu_u8 = A_fp8.cpu()
+        B_cpu_u8 = B_fp8.cpu()
+        for _ in range(warmup):
+            a = A_cpu_u8.float().half().to("mps")
+            b = B_cpu_u8.float().half().to("mps")
+            _ = (a @ b.T) * 0.01 * 0.01
+        torch.mps.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            a = A_cpu_u8.float().half().to("mps")
+            b = B_cpu_u8.float().half().to("mps")
+            _ = (a @ b.T) * 0.01 * 0.01
+        torch.mps.synchronize()
+        cpu_ms = (time.perf_counter() - t0) / iters * 1000
+
+        # Native fused kernel
+        for _ in range(warmup):
+            _ = fp8_mps_native.fp8_scaled_mm(A_fp8, B_fp8, sa, sb)
+        torch.mps.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            _ = fp8_mps_native.fp8_scaled_mm(A_fp8, B_fp8, sa, sb)
+        torch.mps.synchronize()
+        fused_ms = (time.perf_counter() - t0) / iters * 1000
+
+        # Native fast (dequant + matmul)
+        for _ in range(warmup):
+            _ = fp8_mps_native.fp8_scaled_mm_fast(A_fp8, B_fp8, sa, sb)
+        torch.mps.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            _ = fp8_mps_native.fp8_scaled_mm_fast(A_fp8, B_fp8, sa, sb)
+        torch.mps.synchronize()
+        fast_ms = (time.perf_counter() - t0) / iters * 1000
+
+        # Native auto
+        for _ in range(warmup):
+            _ = fp8_mps_native.fp8_scaled_mm_auto(A_fp8, B_fp8, sa, sb)
+        torch.mps.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            _ = fp8_mps_native.fp8_scaled_mm_auto(A_fp8, B_fp8, sa, sb)
+        torch.mps.synchronize()
+        auto_ms = (time.perf_counter() - t0) / iters * 1000
+
+        best_ms = min(fused_ms, fast_ms)
+        speedup = cpu_ms / best_ms
+
+        print(f"    FP16 native:   {fp16_ms:7.2f} ms (ideal baseline)")
+        print(f"    CPU fallback:  {cpu_ms:7.2f} ms (what we replace)")
+        print(f"    Fused kernel:  {fused_ms:7.2f} ms")
+        print(f"    Fast dequant:  {fast_ms:7.2f} ms")
+        print(f"    Auto select:   {auto_ms:7.2f} ms")
+        print(f"    Best speedup:  {speedup:.2f}x vs CPU fallback")
+
+    print(f"\n  RESULT: REPORTED")
+    print()
+    return True
+
+
+def test_monkey_patch():
+    """Test monkey-patch install/uninstall."""
+    print("=" * 60)
+    print("Test 7: Monkey-patch install/uninstall")
+    print("=" * 60)
+
+    import fp8_mps_patch
+
+    assert not fp8_mps_patch.is_installed(), "Should not be installed initially"
+    print("  Not installed: OK")
+
+    fp8_mps_patch.install()
+    assert fp8_mps_patch.is_installed(), "Should be installed after install()"
+    print("  Installed: OK")
+
+    fp8_mps_patch.install()  # idempotent
+    assert fp8_mps_patch.is_installed()
+    print("  Idempotent install: OK")
+
+    assert torch._scaled_mm is not fp8_mps_patch._original_scaled_mm
+    print("  torch._scaled_mm patched: OK")
+
+    fp8_mps_patch.uninstall()
+    assert not fp8_mps_patch.is_installed(), "Should not be installed after uninstall()"
+    print("  Uninstalled: OK")
+
+    print(f"  RESULT: PASS")
+    print()
+    return True
+
+
+if __name__ == "__main__":
+    print(f"PyTorch {torch.__version__}, MPS available: {torch.backends.mps.is_available()}")
+    print(f"Python {sys.version}")
+    print()
+
+    results = {}
+    results["exhaustive_decode"] = test_exhaustive_fp8_decode()
+    results["matmul_cpp_ext"] = test_matmul_accuracy_cpp()
+    results["matmul_native"] = test_matmul_accuracy_native()
+    results["roundtrip"] = test_quantize_roundtrip()
+    results["vecmat"] = test_vecmat_native()
+    results["performance"] = test_performance()
+    results["monkey_patch"] = test_monkey_patch()
+
+    print("=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    all_pass = True
+    for name, passed in results.items():
+        status = "PASS" if passed else "FAIL"
+        print(f"  {name:25s} {status}")
+        if not passed:
+            all_pass = False
+
+    print()
+    print(f"Overall: {'ALL PASSED' if all_pass else 'SOME FAILURES'}")
+    sys.exit(0 if all_pass else 1)
