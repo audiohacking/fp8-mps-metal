@@ -382,6 +382,28 @@ These numbers are from our validated test suite. Your results will vary by chip.
 - Python 3.10+
 - **No Xcode required** (runtime shader compilation)
 
+## Troubleshooting
+
+### AttributeError: module 'torch.mps' has no attribute 'compile_shader'
+
+This error occurs when using PyTorch versions older than 2.10. The `torch.mps.compile_shader()` API was introduced in PyTorch 2.10.
+
+**Solutions:**
+
+1. **Upgrade PyTorch (Recommended):**
+   ```bash
+   pip install --upgrade torch torchvision
+   ```
+
+2. **Use the C++ extension fallback:**
+   ```bash
+   cd /path/to/fp8-mps-metal
+   pip install -e .
+   ```
+   Then modify your code to use `import fp8_metal` instead of the native implementation.
+
+The C++ extension provides similar functionality but uses metal-cpp and pybind11 instead of the native PyTorch API.
+
 ## Related Resources
 
 - [metalQwen3](https://github.com/Architect2040/metalQwen3) — Custom Metal shaders for Qwen3 transformer inference
