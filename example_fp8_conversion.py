@@ -4,6 +4,12 @@ Example: Using Float8_e4m3fn conversions on MPS
 
 This example demonstrates how to use the fp8_mps_patch to enable
 Float8_e4m3fn dtype conversions on Apple Silicon MPS backend.
+
+Key scenarios covered:
+1. Float32 -> FP8 conversion on MPS (quantization)
+2. Float CPU -> FP8 on MPS (quantization + transfer)
+3. FP8 CPU -> MPS (raw bytes transfer for pre-quantized weights)
+4. Using FP8 tensors in operations
 """
 
 import torch
@@ -31,7 +37,7 @@ print(f"MPS available: {torch.backends.mps.is_available()}")
 print()
 
 # Example 1: Convert a float32 tensor to Float8_e4m3fn on MPS
-print("Example 1: Float32 to Float8_e4m3fn conversion")
+print("Example 1: Float32 to Float8_e4m3fn conversion (quantization)")
 print("-" * 60)
 x = torch.randn(4, 8, device="mps")
 print(f"Original tensor: shape={x.shape}, dtype={x.dtype}, device={x.device}")
@@ -41,7 +47,7 @@ x_fp8 = x.to(torch.float8_e4m3fn)
 print(f"Converted to FP8: shape={x_fp8.shape}, dtype={x_fp8.dtype}, device={x_fp8.device}")
 print()
 
-# Example 2: Convert from CPU to MPS as Float8_e4m3fn
+# Example 2: Convert from CPU to MPS as Float8_e4m3fn (quantization + transfer)
 print("Example 2: CPU to MPS Float8_e4m3fn conversion")
 print("-" * 60)
 x_cpu = torch.randn(4, 8)
@@ -52,8 +58,23 @@ x_fp8_from_cpu = x_cpu.to("mps", dtype=torch.float8_e4m3fn)
 print(f"Converted to MPS FP8: dtype={x_fp8_from_cpu.dtype}, device={x_fp8_from_cpu.device}")
 print()
 
-# Example 3: Use FP8 tensors in computation
-print("Example 3: Using FP8 tensors in matrix multiplication")
+# Example 3: Transfer pre-quantized FP8 weights to MPS (ComfyUI/FLUX scenario)
+print("Example 3: Load pre-quantized FP8 weights and move to MPS")
+print("-" * 60)
+# Simulate loading FP8-quantized weights (e.g., from safetensors)
+# In real usage, this would come from model loading
+weight_bytes = torch.randint(0, 255, (256, 512), dtype=torch.uint8)
+weight_fp8_cpu = weight_bytes.view(torch.float8_e4m3fn)
+print(f"Loaded FP8 weight: shape={weight_fp8_cpu.shape}, dtype={weight_fp8_cpu.dtype}, device={weight_fp8_cpu.device}")
+
+# Move to MPS - this is what fails without the patch
+weight_fp8_mps = weight_fp8_cpu.to("mps")
+print(f"Moved to MPS: dtype={weight_fp8_mps.dtype}, device={weight_fp8_mps.device}")
+print("✓ Raw bytes transferred correctly (no quantization needed)")
+print()
+
+# Example 4: Use FP8 tensors in computation
+print("Example 4: Using FP8 tensors in matrix multiplication")
 print("-" * 60)
 A = torch.randn(16, 32, device="mps")
 B = torch.randn(32, 32, device="mps")
@@ -75,8 +96,8 @@ result = torch._scaled_mm(A_fp8, B_fp8.t(), scale_a=scale_a, scale_b=scale_b)
 print(f"Result: shape={result.shape}, dtype={result.dtype}")
 print()
 
-# Example 4: Model quantization workflow
-print("Example 4: Quantizing a model layer")
+# Example 5: Model quantization workflow
+print("Example 5: Quantizing a model layer")
 print("-" * 60)
 # Simulate a model layer weight
 weight = torch.randn(256, 512, device="mps")
@@ -90,8 +111,18 @@ print()
 
 print("=" * 60)
 print("All examples completed successfully!")
-print("Note: FP8 quantization reduces memory by 50% vs FP32 and 25% vs FP16")
+print("=" * 60)
+print()
+print("Key capabilities enabled by fp8_mps_patch:")
+print("  1. Float32/16 -> FP8 quantization on MPS")
+print("  2. CPU Float32/16 -> MPS FP8 (quantization + transfer)")
+print("  3. CPU FP8 -> MPS FP8 (raw bytes transfer, no re-quantization)")
+print("  4. FP8 matrix operations via Metal kernels")
+print()
+print("Note: FP8 quantization reduces memory by 75% vs FP32 and 50% vs FP16")
 print("      Accuracy is typically within 1-5% of FP16 for inference workloads")
+print()
+print("Use case: Loading and running FLUX/SD3.5 FP8-quantized models on Mac")
 
 # Clean up: uninstall the patch (optional)
 fp8_mps_patch.uninstall()

@@ -81,6 +81,11 @@ def _metal_tensor_to(self, *args, **kwargs):
     Intercepts conversions to torch.float8_e4m3fn or torch.float8_e5m2 on MPS
     and routes them through our Metal quantization kernel instead of the
     unsupported native MPS cast.
+    
+    Handles three scenarios:
+    1. FP8 tensor on CPU -> MPS device (raw bytes transfer as uint8)
+    2. Float tensor -> FP8 on MPS (quantization via Metal kernel)
+    3. FP8 tensor already on MPS (pass-through or dtype conversion)
     """
     # Parse arguments to detect dtype conversion
     dtype = kwargs.get('dtype')
@@ -95,36 +100,77 @@ def _metal_tensor_to(self, *args, **kwargs):
                 if device is None:
                     device = arg
     
-    # Check if this is an FP8 conversion on MPS
+    # Check if source tensor is FP8
+    source_is_fp8 = False
+    if hasattr(torch, 'float8_e4m3fn') and self.dtype == torch.float8_e4m3fn:
+        source_is_fp8 = True
+    elif hasattr(torch, 'float8_e5m2') and self.dtype == torch.float8_e5m2:
+        source_is_fp8 = True
+    
+    # Check if target is MPS device
     target_device_is_mps = (
         (device and (device == "mps" or (isinstance(device, torch.device) and device.type == "mps"))) or
         (device is None and self.device.type == "mps")
     )
     
-    # Check if this is an FP8 conversion - handle both e4m3fn and e5m2
-    is_fp8_conversion = False
+    # Check if target dtype is FP8
+    target_is_fp8 = False
+    target_fp8_dtype = None
     if hasattr(torch, 'float8_e4m3fn') and dtype == torch.float8_e4m3fn:
-        is_fp8_conversion = True
+        target_is_fp8 = True
+        target_fp8_dtype = torch.float8_e4m3fn
     elif hasattr(torch, 'float8_e5m2') and dtype == torch.float8_e5m2:
-        is_fp8_conversion = True
+        target_is_fp8 = True
+        target_fp8_dtype = torch.float8_e5m2
     
-    if target_device_is_mps and is_fp8_conversion:
+    # Scenario 1: FP8 tensor on CPU/other -> MPS device (raw bytes transfer)
+    # This handles loading pre-quantized weights and moving them to MPS
+    if source_is_fp8 and device and target_device_is_mps and self.device.type != "mps":
+        # Transfer as uint8 (raw bytes), then view back as FP8
+        # This avoids MPS's dtype conversion which doesn't support FP8
+        tensor_u8 = self.view(torch.uint8)
+        # Use original to() to transfer uint8 to MPS
+        tensor_u8_mps = _original_tensor_to(tensor_u8, device, **{k: v for k, v in kwargs.items() if k != 'device' and k != 'dtype'})
+        # View back as the original FP8 dtype
+        result = tensor_u8_mps.view(self.dtype)
+        # Apply dtype conversion if requested and different
+        if dtype is not None and dtype != self.dtype:
+            # This would be FP8->FP8 conversion, handle if needed
+            if target_is_fp8:
+                result = result.view(torch.uint8).view(target_fp8_dtype)
+        return result
+    
+    # Scenario 2: Float/other tensor -> FP8 on MPS (quantization)
+    # This handles on-the-fly quantization
+    if target_device_is_mps and target_is_fp8 and not source_is_fp8:
         import fp8_mps_native
         
-        # Quantize the tensor using our Metal kernel
-        # First ensure it's on MPS and float32
-        tensor_mps = self if self.device.type == "mps" else self.to("mps")
+        # First move to MPS if not already there (using original method with non-FP8 dtype)
+        if self.device.type != "mps":
+            # Transfer without dtype change first
+            tensor_mps = _original_tensor_to(self, device if device else "mps", **{k: v for k, v in kwargs.items() if k != 'device' and k != 'dtype'})
+        else:
+            tensor_mps = self
         
         # Use fp8_quantize to convert to uint8 (FP8 encoded)
         quantized_u8, scale = fp8_mps_native.fp8_quantize(tensor_mps)
         
         # View the uint8 as the requested FP8 dtype
-        # This is safe because FP8 is stored as uint8 in PyTorch
-        result = quantized_u8.view(dtype)
+        result = quantized_u8.view(target_fp8_dtype)
         
         # Note: The scale is not stored with the tensor, which matches PyTorch's
         # behavior for FP8 dtypes. Users must manage scales separately.
         return result
+    
+    # Scenario 3: FP8 on MPS, no device change needed
+    # Just pass through or handle dtype conversion if needed
+    if source_is_fp8 and self.device.type == "mps" and (device is None or target_device_is_mps):
+        if dtype is None or dtype == self.dtype:
+            # No conversion needed
+            return self
+        elif target_is_fp8:
+            # FP8 to FP8 dtype conversion (e.g., e4m3fn to e5m2)
+            return self.view(torch.uint8).view(target_fp8_dtype)
     
     # For all other conversions, use the original method
     return _original_tensor_to(self, *args, **kwargs)

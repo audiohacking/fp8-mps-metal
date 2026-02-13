@@ -456,8 +456,26 @@ def test_fp8_conversion():
         print(f"    Roundtrip max absolute error: {max_err:.4f}")
         print("    FP8 accuracy validation: OK")
 
-        # Test 7: Verify conversion in computation pipeline
-        print("\n  Test 7: Use converted FP8 tensors in operations")
+        # Test 7: FP8 CPU tensor to MPS device transfer (ComfyUI scenario)
+        print("\n  Test 7: FP8 CPU tensor -> MPS device (raw bytes transfer)")
+        # This simulates loading pre-quantized model weights
+        x_u8_cpu = torch.randint(0, 255, (4, 8), dtype=torch.uint8)
+        x_fp8_cpu = x_u8_cpu.view(torch.float8_e4m3fn)
+        print(f"    Input: dtype={x_fp8_cpu.dtype}, device={x_fp8_cpu.device}")
+        
+        # This is what ComfyUI does - move FP8 weights to MPS
+        x_fp8_mps = x_fp8_cpu.to("mps")
+        print(f"    Output: dtype={x_fp8_mps.dtype}, device={x_fp8_mps.device}")
+        assert x_fp8_mps.dtype == torch.float8_e4m3fn, "Dtype should be preserved"
+        assert x_fp8_mps.device.type == "mps", "Should be on MPS"
+        
+        # Verify the bytes are identical
+        x_u8_mps = x_fp8_mps.view(torch.uint8).cpu()
+        assert torch.equal(x_u8_cpu, x_u8_mps), "Bytes should be identical"
+        print("    FP8 CPU -> MPS transfer: PASS")
+
+        # Test 8: Verify conversion in computation pipeline
+        print("\n  Test 8: Use converted FP8 tensors in operations")
         A_f32 = torch.randn(16, 32, device="mps")
         B_f32 = torch.randn(32, 32, device="mps")
         
@@ -478,8 +496,8 @@ def test_fp8_conversion():
         assert result.device.type == "mps"
         print("    FP8 tensors used in matmul: OK")
 
-        # Test 8: Verify patch can be safely uninstalled
-        print("\n  Test 8: Patch uninstall and restoration")
+        # Test 9: Verify patch can be safely uninstalled
+        print("\n  Test 9: Patch uninstall and restoration")
         original_to = fp8_mps_patch._original_tensor_to
         fp8_mps_patch.uninstall()
         assert not fp8_mps_patch.is_installed()
