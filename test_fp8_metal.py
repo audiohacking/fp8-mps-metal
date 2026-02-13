@@ -579,6 +579,132 @@ def test_fp8_conversion():
     return all_tests_passed
 
 
+def test_fp8_value_preservation():
+    """Test that FP8 conversions preserve value semantics (no automatic scaling)."""
+    print("=" * 60)
+    print("Test 9: FP8 value preservation (no automatic scaling)")
+    print("=" * 60)
+
+    import fp8_mps_patch
+    import fp8_mps_native
+
+    # Check if torch.float8_e4m3fn is available
+    if not hasattr(torch, 'float8_e4m3fn'):
+        print("  torch.float8_e4m3fn not available in this PyTorch version")
+        print("  RESULT: SKIP")
+        print()
+        return True
+
+    fp8_mps_patch.install()
+
+    try:
+        # Test 1: Small values should be preserved (not scaled up)
+        print("\n  Test 1: Small values preservation")
+        small_values = torch.tensor([0.1, 0.5, 1.0, 2.0], device="mps")
+        small_fp8 = small_values.to(torch.float8_e4m3fn)
+        
+        # Decode using scale=1.0 (no scaling)
+        small_decoded = small_fp8.to(torch.float32)
+        
+        print(f"    Input:   {small_values.cpu().tolist()}")
+        print(f"    Decoded: {small_decoded.cpu().tolist()}")
+        
+        # Check that values are close to original (within FP8 precision)
+        max_rel_error = 0.0
+        for orig, decoded in zip(small_values.cpu(), small_decoded.cpu()):
+            if abs(orig) > 1e-6:
+                rel_error = abs(decoded - orig) / abs(orig)
+                max_rel_error = max(max_rel_error, rel_error)
+        
+        print(f"    Max relative error: {max_rel_error:.2%}")
+        assert max_rel_error < 0.15, f"Relative error too high: {max_rel_error:.2%}"
+        print("    Small values preserved: OK")
+
+        # Test 2: Medium values should be preserved (not scaled)
+        print("\n  Test 2: Medium values preservation")
+        medium_values = torch.tensor([10.0, 50.0, 100.0, 200.0], device="mps")
+        medium_fp8 = medium_values.to(torch.float8_e4m3fn)
+        medium_decoded = medium_fp8.to(torch.float32)
+        
+        print(f"    Input:   {medium_values.cpu().tolist()}")
+        print(f"    Decoded: {medium_decoded.cpu().tolist()}")
+        
+        max_rel_error = 0.0
+        for orig, decoded in zip(medium_values.cpu(), medium_decoded.cpu()):
+            if abs(orig) > 1e-6:
+                rel_error = abs(decoded - orig) / abs(orig)
+                max_rel_error = max(max_rel_error, rel_error)
+        
+        print(f"    Max relative error: {max_rel_error:.2%}")
+        assert max_rel_error < 0.15, f"Relative error too high: {max_rel_error:.2%}"
+        print("    Medium values preserved: OK")
+
+        # Test 3: Mixed range values should be preserved
+        print("\n  Test 3: Mixed range preservation")
+        mixed_values = torch.tensor([0.1, 1.0, 10.0, 100.0], device="mps")
+        mixed_fp8 = mixed_values.to(torch.float8_e4m3fn)
+        mixed_decoded = mixed_fp8.to(torch.float32)
+        
+        print(f"    Input:   {mixed_values.cpu().tolist()}")
+        print(f"    Decoded: {mixed_decoded.cpu().tolist()}")
+        
+        # For mixed ranges, check each value individually
+        for i, (orig, decoded) in enumerate(zip(mixed_values.cpu(), mixed_decoded.cpu())):
+            if abs(orig) > 1e-6:
+                rel_error = abs(decoded - orig) / abs(orig)
+                print(f"      [{i}] orig={orig:.2f}, decoded={decoded:.2f}, rel_error={rel_error:.2%}")
+                assert rel_error < 0.15, f"Value {i}: relative error too high: {rel_error:.2%}"
+        
+        print("    Mixed range preserved: OK")
+
+        # Test 4: Verify NO automatic scaling is applied
+        print("\n  Test 4: Verify no automatic scaling")
+        # If automatic scaling were applied, a small value would be scaled up
+        # to use the full FP8 range, making it much larger when decoded
+        test_value = torch.tensor([1.0], device="mps")
+        test_fp8 = test_value.to(torch.float8_e4m3fn)
+        test_decoded = test_fp8.to(torch.float32)
+        
+        print(f"    Input:   {test_value.cpu().item()}")
+        print(f"    Decoded: {test_decoded.cpu().item()}")
+        
+        # With no scaling: input ~1.0 → decoded ~1.0
+        # With scaling: input 1.0 → scaled to 448.0 → decoded 448.0 (BUG!)
+        assert abs(test_decoded.cpu().item() - 1.0) < 0.2, \
+            f"Value was scaled! Expected ~1.0, got {test_decoded.cpu().item()}"
+        print("    No automatic scaling: CONFIRMED")
+
+        # Test 5: Copy operation should preserve values
+        print("\n  Test 5: Copy operation value preservation")
+        src_values = torch.tensor([1.0, 5.0, 10.0, 50.0], device="mps", dtype=torch.float32)
+        dst_fp8 = torch.empty(4, dtype=torch.float8_e4m3fn, device="mps")
+        
+        dst_fp8.copy_(src_values)
+        dst_decoded = dst_fp8.to(torch.float32)
+        
+        print(f"    Input:   {src_values.cpu().tolist()}")
+        print(f"    Decoded: {dst_decoded.cpu().tolist()}")
+        
+        for i, (orig, decoded) in enumerate(zip(src_values.cpu(), dst_decoded.cpu())):
+            if abs(orig) > 1e-6:
+                rel_error = abs(decoded - orig) / abs(orig)
+                assert rel_error < 0.15, \
+                    f"Copy [{i}]: expected ~{orig}, got {decoded} (rel_error={rel_error:.2%})"
+        
+        print("    Copy operation preserves values: OK")
+
+        print(f"\n  RESULT: PASS (all value preservation tests passed)")
+        return True
+        
+    except Exception as e:
+        print(f"\n  RESULT: FAIL - {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        fp8_mps_patch.uninstall()
+
+
 if __name__ == "__main__":
     print(f"PyTorch {torch.__version__}, MPS available: {torch.backends.mps.is_available()}")
     print(f"Python {sys.version}")
@@ -593,6 +719,7 @@ if __name__ == "__main__":
     results["performance"] = test_performance()
     results["monkey_patch"] = test_monkey_patch()
     results["fp8_conversion"] = test_fp8_conversion()
+    results["value_preservation"] = test_fp8_value_preservation()
 
     print("=" * 60)
     print("SUMMARY")
