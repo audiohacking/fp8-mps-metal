@@ -10,8 +10,17 @@ If you've tried to run FLUX, SD3.5, or any FP8-quantized model on your Mac and h
 
 **This is the easiest way to use FP8 models in ComfyUI on Apple Silicon:**
 
+### Automatic
+
+Browse `ComfyUI > Manage Extensions` and search for `fp8-mps-metal`
+
+<img width="600" alt="ComfyUI Extension" src="https://github.com/user-attachments/assets/11024d0e-5b2a-413e-8d78-25ee59e3eb27" />
+
+
+### Manual
+
 ```bash
-cd /path/to/ComfyUI/custom_nodes
+cd /Users/USERNAME/Documents/ComfyUI/custom_nodes
 git clone https://github.com/audiohacking/fp8-mps-metal.git
 ```
 
