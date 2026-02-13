@@ -130,7 +130,8 @@ def _metal_tensor_to(self, *args, **kwargs):
         # This avoids MPS's dtype conversion which doesn't support FP8
         tensor_u8 = self.view(torch.uint8)
         # Use original to() to transfer uint8 to MPS
-        tensor_u8_mps = _original_tensor_to(tensor_u8, device, **{k: v for k, v in kwargs.items() if k != 'device' and k != 'dtype'})
+        other_kwargs = {k: v for k, v in kwargs.items() if k not in ('device', 'dtype')}
+        tensor_u8_mps = _original_tensor_to(tensor_u8, device, **other_kwargs)
         # View back as the original FP8 dtype
         result = tensor_u8_mps.view(self.dtype)
         # Apply dtype conversion if requested and different
@@ -148,7 +149,8 @@ def _metal_tensor_to(self, *args, **kwargs):
         # First move to MPS if not already there (using original method with non-FP8 dtype)
         if self.device.type != "mps":
             # Transfer without dtype change first
-            tensor_mps = _original_tensor_to(self, device if device else "mps", **{k: v for k, v in kwargs.items() if k != 'device' and k != 'dtype'})
+            other_kwargs = {k: v for k, v in kwargs.items() if k not in ('device', 'dtype')}
+            tensor_mps = _original_tensor_to(self, device if device else "mps", **other_kwargs)
         else:
             tensor_mps = self
         
