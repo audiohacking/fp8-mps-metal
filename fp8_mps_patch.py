@@ -1,9 +1,9 @@
 """
-Monkey-patch torch._scaled_mm and Tensor.to() to support FP8 MPS tensors.
+Monkey-patch torch._scaled_mm, Tensor.to(), and Tensor.copy_() to support FP8 MPS tensors.
 
 Usage:
     import fp8_mps_patch
-    fp8_mps_patch.install()   # patches torch._scaled_mm and Tensor.to()
+    fp8_mps_patch.install()   # patches torch._scaled_mm, Tensor.to(), and Tensor.copy_()
     fp8_mps_patch.uninstall() # restores original
 
 ComfyUI integration: import this before loading models, and all
@@ -15,6 +15,7 @@ import torch
 
 _original_scaled_mm = None
 _original_tensor_to = None
+_original_tensor_copy = None
 _installed = False
 
 
@@ -178,9 +179,61 @@ def _metal_tensor_to(self, *args, **kwargs):
     return _original_tensor_to(self, *args, **kwargs)
 
 
+def _metal_tensor_copy(self, src, non_blocking=False):
+    """
+    Drop-in replacement for Tensor.copy_() that handles FP8 tensors on MPS.
+    
+    Intercepts copy operations where source is FP8 and destination is MPS,
+    which would otherwise fail with "does not have support for that dtype".
+    
+    This handles the ComfyUI scenario where stochastic_rounding creates FP8
+    tensors and tries to copy them into MPS tensors using .copy_().
+    """
+    # Check if source is FP8
+    source_is_fp8 = False
+    if hasattr(torch, 'float8_e4m3fn') and src.dtype == torch.float8_e4m3fn:
+        source_is_fp8 = True
+    elif hasattr(torch, 'float8_e5m2') and src.dtype == torch.float8_e5m2:
+        source_is_fp8 = True
+    
+    # Check if destination (self) is MPS
+    dest_is_mps = self.device.type == "mps"
+    
+    # Scenario: FP8 source → MPS destination (the problematic case in ComfyUI)
+    if source_is_fp8 and dest_is_mps:
+        # Convert FP8 to uint8 (raw bytes), copy, then view back as FP8
+        # This avoids MPS's dtype conversion which doesn't support FP8
+        
+        # First, ensure source is contiguous for proper byte interpretation
+        src_contig = src.contiguous() if not src.is_contiguous() else src
+        
+        # View source as uint8 (raw bytes)
+        src_u8 = src_contig.view(torch.uint8)
+        
+        # View destination as uint8 for byte-level copy
+        # Must preserve original shape for view
+        if self.dtype == torch.float8_e4m3fn or self.dtype == torch.float8_e5m2:
+            # Destination is already FP8, view as uint8
+            self_u8 = self.view(torch.uint8)
+        else:
+            # Destination is not FP8, we need to handle dtype conversion
+            # This shouldn't happen in the ComfyUI scenario, but handle it anyway
+            # In this case, we can't do a simple byte copy - fall through to original
+            return _original_tensor_copy(self, src, non_blocking=non_blocking)
+        
+        # Copy uint8 bytes using original copy_ (which works for uint8)
+        _original_tensor_copy(self_u8, src_u8, non_blocking=non_blocking)
+        
+        # Return self (copy_ returns self)
+        return self
+    
+    # For all other copy operations, use the original method
+    return _original_tensor_copy(self, src, non_blocking=non_blocking)
+
+
 def install():
-    """Monkey-patch torch._scaled_mm and Tensor.to() to use Metal FP8 kernels on MPS."""
-    global _original_scaled_mm, _original_tensor_to, _installed
+    """Monkey-patch torch._scaled_mm, Tensor.to(), and Tensor.copy_() to use Metal FP8 kernels on MPS."""
+    global _original_scaled_mm, _original_tensor_to, _original_tensor_copy, _installed
     if _installed:
         return
 
@@ -194,12 +247,16 @@ def install():
     _original_tensor_to = torch.Tensor.to
     torch.Tensor.to = _metal_tensor_to
     
+    # Patch Tensor.copy_() for FP8 tensor copies to MPS
+    _original_tensor_copy = torch.Tensor.copy_
+    torch.Tensor.copy_ = _metal_tensor_copy
+    
     _installed = True
 
 
 def uninstall():
-    """Restore original torch._scaled_mm and Tensor.to()."""
-    global _original_scaled_mm, _original_tensor_to, _installed
+    """Restore original torch._scaled_mm, Tensor.to(), and Tensor.copy_()."""
+    global _original_scaled_mm, _original_tensor_to, _original_tensor_copy, _installed
     if not _installed:
         return
 
@@ -210,6 +267,10 @@ def uninstall():
     if _original_tensor_to is not None:
         torch.Tensor.to = _original_tensor_to
         _original_tensor_to = None
+    
+    if _original_tensor_copy is not None:
+        torch.Tensor.copy_ = _original_tensor_copy
+        _original_tensor_copy = None
     
     _installed = False
 

@@ -496,12 +496,30 @@ def test_fp8_conversion():
         assert result.device.type == "mps"
         print("    FP8 tensors used in matmul: OK")
 
-        # Test 9: Verify patch can be safely uninstalled
-        print("\n  Test 9: Patch uninstall and restoration")
+        # Test 9: FP8 .copy_() operation (ComfyUI scenario)
+        print("\n  Test 9: FP8 .copy_() operation on MPS")
+        # This simulates ComfyUI's stochastic_rounding which creates FP8 tensors
+        # and tries to copy them into MPS tensors
+        fp8_source = torch.randint(0, 255, (4, 8), dtype=torch.uint8).view(torch.float8_e4m3fn)
+        fp8_dest_mps = torch.empty(4, 8, dtype=torch.float8_e4m3fn, device="mps")
+        
+        # This should work with our patch
+        fp8_dest_mps.copy_(fp8_source)
+        
+        # Verify bytes are preserved
+        dest_u8 = fp8_dest_mps.view(torch.uint8).cpu()
+        src_u8 = fp8_source.view(torch.uint8)
+        assert torch.equal(dest_u8, src_u8), "Bytes should be preserved in copy_"
+        print("    FP8 .copy_() to MPS: OK")
+
+        # Test 10: Verify patch can be safely uninstalled
+        print("\n  Test 10: Patch uninstall and restoration")
         original_to = fp8_mps_patch._original_tensor_to
+        original_copy = fp8_mps_patch._original_tensor_copy
         fp8_mps_patch.uninstall()
         assert not fp8_mps_patch.is_installed()
         assert torch.Tensor.to == original_to
+        assert torch.Tensor.copy_ == original_copy
         print("    Patch uninstalled successfully: OK")
         
         # Reinstall for cleanup
