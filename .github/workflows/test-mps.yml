@@ -1,8 +1,6 @@
 name: Test FP8 MPS Support
 
 on:
-  push:
-    branches: [ main, develop, copilot/** ]
   pull_request:
     branches: [ main, develop ]
   workflow_dispatch:
