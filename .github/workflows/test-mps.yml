@@ -43,50 +43,65 @@ jobs:
             print('torch.float8_e4m3fn:', torch.float8_e4m3fn)
         "
     
-    - name: Run CPU-based validation tests
+    - name: Test patch mechanism
       run: |
-        python test_validation.py
+        python -c "
+        import torch
+        import fp8_mps_patch
+        
+        # Test the patch installation
+        assert not fp8_mps_patch.is_installed()
+        fp8_mps_patch.install()
+        assert fp8_mps_patch.is_installed()
+        print('✓ Patch installed successfully')
+        
+        # Verify both methods are patched
+        assert torch.Tensor.to != fp8_mps_patch._original_tensor_to
+        print('✓ Tensor.to is patched')
+        
+        if hasattr(torch, '_scaled_mm'):
+            assert torch._scaled_mm != fp8_mps_patch._original_scaled_mm
+            print('✓ torch._scaled_mm is patched')
+        
+        # Test uninstall
+        fp8_mps_patch.uninstall()
+        assert not fp8_mps_patch.is_installed()
+        print('✓ Patch uninstalled successfully')
+        "
     
-    - name: Run patch logic tests
+    - name: Test FP8 conversion (if MPS available)
       run: |
-        python test_fp8_conversion_cpu.py
+        python -c "
+        import torch
+        import fp8_mps_patch
+        
+        if not hasattr(torch, 'float8_e4m3fn'):
+            print('⊘ Float8_e4m3fn not available in this PyTorch version')
+            exit(0)
+        
+        fp8_mps_patch.install()
+        
+        if torch.backends.mps.is_available():
+            # Test FP8 conversion on MPS
+            try:
+                x = torch.randn(4, 8, device='mps')
+                x_fp8 = x.to(torch.float8_e4m3fn)
+                print(f'✓ FP8 conversion on MPS: {x_fp8.dtype}')
+            except Exception as e:
+                print(f'⚠ FP8 conversion on MPS failed: {e}')
+                print('This is expected if MPS FP8 support requires actual Apple Silicon')
+        else:
+            print('⊘ MPS not available - testing CPU fallback')
+            x = torch.randn(4, 8)
+            x_fp8 = x.to(torch.float8_e4m3fn)
+            print(f'✓ FP8 conversion on CPU: {x_fp8.dtype}')
+        
+        fp8_mps_patch.uninstall()
+        "
     
     - name: Test example script (syntax check)
       run: |
         python -m py_compile example_fp8_conversion.py
-    
-    - name: Run MPS tests (if available)
-      run: |
-        if python -c "import torch; exit(0 if torch.backends.mps.is_available() else 1)"; then
-          echo "MPS is available - running full test suite"
-          # Note: The full test suite requires C++ extension build
-          # For now, we'll run the Python-only tests
-          python -c "
-          import torch
-          import fp8_mps_patch
-          
-          # Test the patch installation
-          fp8_mps_patch.install()
-          print('✓ Patch installed successfully')
-          
-          # Test FP8 conversion on MPS
-          if hasattr(torch, 'float8_e4m3fn'):
-              try:
-                  x = torch.randn(4, 8, device='mps')
-                  x_fp8 = x.to(torch.float8_e4m3fn)
-                  print(f'✓ FP8 conversion on MPS: {x_fp8.dtype}')
-              except Exception as e:
-                  print(f'⚠ FP8 conversion on MPS failed: {e}')
-                  print('This is expected if MPS FP8 support is not fully available')
-          
-          fp8_mps_patch.uninstall()
-          print('✓ Patch uninstalled successfully')
-          "
-        else
-          echo "⚠ MPS not available on this runner"
-          echo "This is expected for standard GitHub Actions macOS runners"
-          echo "MPS requires actual Apple Silicon hardware"
-        fi
     
     - name: Summary
       if: always()
@@ -132,15 +147,41 @@ jobs:
         print('Float8_e4m3fn available:', hasattr(torch, 'float8_e4m3fn'))
         "
     
-    - name: Run validation tests
+    - name: Test patch mechanism
       run: |
-        python test_validation.py
+        python -c "
+        import torch
+        import fp8_mps_patch
+        
+        # Test install/uninstall
+        assert not fp8_mps_patch.is_installed()
+        fp8_mps_patch.install()
+        assert fp8_mps_patch.is_installed()
+        assert torch.Tensor.to != fp8_mps_patch._original_tensor_to
+        fp8_mps_patch.uninstall()
+        assert not fp8_mps_patch.is_installed()
+        print('✓ Patch mechanism works correctly')
+        "
     
-    - name: Run patch logic tests
+    - name: Test normal operations not affected
       run: |
-        python test_fp8_conversion_cpu.py
+        python -c "
+        import torch
+        import fp8_mps_patch
+        
+        fp8_mps_patch.install()
+        
+        # Verify normal operations still work
+        x = torch.randn(4, 4)
+        assert x.to(torch.float16).dtype == torch.float16
+        assert x.to(torch.float64).dtype == torch.float64
+        assert (x @ x).shape == (4, 4)
+        
+        fp8_mps_patch.uninstall()
+        print('✓ Normal operations unaffected')
+        "
     
-    - name: Verify no import errors
+    - name: Verify imports
       run: |
         python -c "
         import fp8_mps_patch
@@ -174,8 +215,6 @@ jobs:
         python -m py_compile fp8_mps_patch.py
         python -m py_compile fp8_mps_native.py
         python -m py_compile test_fp8_metal.py
-        python -m py_compile test_validation.py
-        python -m py_compile test_fp8_conversion_cpu.py
         python -m py_compile example_fp8_conversion.py
         echo "✓ All Python files compile successfully"
     

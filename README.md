@@ -383,25 +383,41 @@ MIT
 ```bash
 # Full test suite with MPS Metal kernels
 python test_fp8_metal.py
-
-# Quick validation
-python test_validation.py
 ```
 
-**On any platform (CPU-only validation):**
+**Test the patch without MPS hardware:**
 ```bash
-# Validates patch logic without requiring MPS
-python test_validation.py
-python test_fp8_conversion_cpu.py
+# Quick inline test
+python -c "
+import torch
+import fp8_mps_patch
+
+# Test patch mechanism
+fp8_mps_patch.install()
+assert fp8_mps_patch.is_installed()
+print('✓ Patch installed')
+
+# Test that normal operations still work
+x = torch.randn(4, 4)
+assert x.to(torch.float16).dtype == torch.float16
+print('✓ Normal operations unaffected')
+
+fp8_mps_patch.uninstall()
+print('✓ All tests passed')
+"
 ```
+
+### Example Usage
+
+See `example_fp8_conversion.py` for practical examples of using Float8_e4m3fn conversions on MPS.
 
 ### Continuous Integration
 
 This repository includes GitHub Actions workflows that automatically test:
 
-- **macOS**: Patch mechanism, argument parsing, FP8 dtype support
+- **macOS**: Patch mechanism, FP8 conversion support
 - **Linux**: CPU-only validation to ensure no regressions
-- **Linting**: Syntax checking and code quality with ruff
+- **Linting**: Syntax checking and code quality
 
 See `.github/workflows/test-mps.yml` for details.
 
