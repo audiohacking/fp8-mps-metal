@@ -1,0 +1,15 @@
+# pyproject.toml
+[project]
+name = "fp8-mps-metal" # Unique identifier for your node. Immutable after creation.
+description = "Custom FP8 compute kernels for Apple Silicon (MPS)"
+version = "0.0.1" # Custom Node version. Must be semantically versioned.
+license = { file = "LICENSE.txt" }
+dependencies  = [] # Filled in from requirements.txt
+
+[project.urls]
+Repository = "https://github.com/audiohacking/fp8-mps-metal"
+
+[tool.comfy]
+PublisherId = "audiohacking" # TODO (fill in Publisher ID from Comfy Registry Website).
+DisplayName = "fp8-mps-metal" # Display name for the Custom Node. Can be changed later.
+Icon = "https://avatars.githubusercontent.com/u/248655186?s=400&u=c76a1b563147e1765aa43ec50daa33d3397ad222&v=4" # SVG, PNG, JPG or GIF (MAX. 800x400px)
