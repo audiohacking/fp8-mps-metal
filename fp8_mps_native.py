@@ -124,9 +124,43 @@ def fp8_dequantize(input: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return output
 
 
+def fp8_encode(input: torch.Tensor):
+    """
+    Float → FP8 encoding on Metal GPU (without scaling).
+    
+    This function encodes float values to FP8 format preserving value semantics.
+    Values are clamped to FP8 range [-448, 448] but NOT scaled.
+    
+    Use this for .to(torch.float8_e4m3fn) conversions and .copy_() operations
+    where you want the FP8 tensor to preserve the original value magnitudes.
+
+    input: float32 tensor
+    Returns: uint8 tensor on MPS (FP8 encoded)
+    """
+    lib = _get_lib()
+
+    inp = input.to(device="mps", dtype=torch.float32).contiguous()
+    count = inp.numel()
+
+    output = torch.empty(inp.shape, dtype=torch.uint8, device="mps")
+
+    # Encode to FP8 without pre-scaling
+    # The Metal kernel will clamp values to FP8 range [-448, 448]
+    lib.float_to_fp8_kernel(
+        inp.view(-1), output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+            )
+
+    return output
+
+
 def fp8_quantize(input: torch.Tensor):
     """
-    Float → FP8 quantization on Metal GPU.
+    Float → FP8 quantization on Metal GPU (with automatic scaling).
+    
+    This function scales the input to use the full FP8 range for maximum precision.
+    Use this for torch._scaled_mm operations where separate scales are managed.
 
     input: float32 tensor
     Returns: (uint8 tensor on MPS, inverse_scale on MPS)

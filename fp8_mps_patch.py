@@ -164,14 +164,13 @@ def _metal_tensor_to(self, *args, **kwargs):
         else:
             tensor_mps = self
         
-        # Use fp8_quantize to convert to uint8 (FP8 encoded)
-        quantized_u8, scale = fp8_mps_native.fp8_quantize(tensor_mps)
+        # Use fp8_encode to convert to FP8 without scaling
+        # This preserves value semantics (no automatic scaling)
+        quantized_u8 = fp8_mps_native.fp8_encode(tensor_mps)
         
         # View the uint8 as the requested FP8 dtype
         result = quantized_u8.view(target_fp8_dtype)
         
-        # Note: The scale is not stored with the tensor, which matches PyTorch's
-        # behavior for FP8 dtypes. Users must manage scales separately.
         return result
     
     # Scenario 3: FP8 on MPS, no device change needed
@@ -236,10 +235,10 @@ def _metal_tensor_copy(self, src, non_blocking=False):
         else:
             src_mps = src
         
-        # Quantize to FP8 using our Metal kernel
-        # fp8_quantize uses automatic scaling: scale = 448.0 / max(abs(input))
-        # where 448.0 is the max representable value in e4m3fn format
-        quantized_u8, scale = fp8_mps_native.fp8_quantize(src_mps)
+        # Encode to FP8 using our Metal kernel (without automatic scaling)
+        # This preserves value semantics - values are clamped to [-448, 448]
+        # but not scaled to use the full FP8 range
+        quantized_u8 = fp8_mps_native.fp8_encode(src_mps)
         
         # View destination as uint8 for byte-level copy
         self_u8 = self.view(torch.uint8)
@@ -247,10 +246,6 @@ def _metal_tensor_copy(self, src, non_blocking=False):
         # Copy quantized bytes
         _original_tensor_copy(self_u8, quantized_u8, non_blocking=non_blocking)
         
-        # Note: scale is discarded, matching PyTorch's behavior for FP8 dtypes.
-        # FP8 tensors don't store scale information - users must manage scales
-        # separately for operations like torch._scaled_mm that require them.
-        # The automatic scaling from fp8_quantize ensures values fit in FP8 range.
         return self
     
     # Scenario 3: FP8 source → non-FP8 destination on MPS
