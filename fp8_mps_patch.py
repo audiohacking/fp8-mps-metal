@@ -19,6 +19,15 @@ _original_tensor_copy = None
 _installed = False
 
 
+def _is_fp8_dtype(dtype):
+    """Helper to check if a dtype is FP8."""
+    if hasattr(torch, 'float8_e4m3fn') and dtype == torch.float8_e4m3fn:
+        return True
+    if hasattr(torch, 'float8_e5m2') and dtype == torch.float8_e5m2:
+        return True
+    return False
+
+
 def _metal_scaled_mm(input, other, *, out_dtype=None, scale_a=None, scale_b=None, bias=None, scale_result=None, use_fast_accum=False):
     """
     Drop-in replacement for torch._scaled_mm that handles FP8 on MPS.
@@ -189,14 +198,8 @@ def _metal_tensor_copy(self, src, non_blocking=False):
     This handles the ComfyUI scenario where stochastic_rounding creates FP8
     tensors and tries to copy them into MPS tensors using .copy_().
     """
-    # Check if source is FP8
-    source_is_fp8 = False
-    if hasattr(torch, 'float8_e4m3fn') and src.dtype == torch.float8_e4m3fn:
-        source_is_fp8 = True
-    elif hasattr(torch, 'float8_e5m2') and src.dtype == torch.float8_e5m2:
-        source_is_fp8 = True
-    
-    # Check if destination (self) is MPS
+    # Check if source is FP8 and destination (self) is MPS
+    source_is_fp8 = _is_fp8_dtype(src.dtype)
     dest_is_mps = self.device.type == "mps"
     
     # Scenario: FP8 source → MPS destination (the problematic case in ComfyUI)
@@ -204,15 +207,14 @@ def _metal_tensor_copy(self, src, non_blocking=False):
         # Convert FP8 to uint8 (raw bytes), copy, then view back as FP8
         # This avoids MPS's dtype conversion which doesn't support FP8
         
-        # First, ensure source is contiguous for proper byte interpretation
-        src_contig = src.contiguous() if not src.is_contiguous() else src
+        # Ensure source is contiguous for proper byte interpretation
+        src_contig = src.contiguous()
         
         # View source as uint8 (raw bytes)
         src_u8 = src_contig.view(torch.uint8)
         
         # View destination as uint8 for byte-level copy
-        # Must preserve original shape for view
-        if self.dtype == torch.float8_e4m3fn or self.dtype == torch.float8_e5m2:
+        if _is_fp8_dtype(self.dtype):
             # Destination is already FP8, view as uint8
             self_u8 = self.view(torch.uint8)
         else:
