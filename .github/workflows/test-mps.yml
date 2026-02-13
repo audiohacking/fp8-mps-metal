@@ -7,10 +7,15 @@ on:
     branches: [ main, develop ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test-macos-mps:
     name: Test on macOS with MPS
     runs-on: macos-latest
+    permissions:
+      contents: read
     
     steps:
     - name: Checkout repository
@@ -102,6 +107,8 @@ jobs:
   test-linux:
     name: Test on Linux (CPU validation only)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     
     steps:
     - name: Checkout repository
@@ -144,6 +151,8 @@ jobs:
   test-syntax:
     name: Syntax and Linting
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     
     steps:
     - name: Checkout repository

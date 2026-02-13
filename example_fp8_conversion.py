@@ -82,10 +82,10 @@ print("-" * 60)
 weight = torch.randn(256, 512, device="mps")
 print(f"Original weight: shape={weight.shape}, dtype={weight.dtype}, memory={weight.numel() * 4 / 1024:.2f} KB")
 
-# Quantize to FP8 - 2x memory reduction
+# Quantize to FP8 - 4x memory reduction vs FP32
 weight_fp8 = weight.to(torch.float8_e4m3fn)
 print(f"Quantized weight: shape={weight_fp8.shape}, dtype={weight_fp8.dtype}, memory={weight_fp8.numel() * 1 / 1024:.2f} KB")
-print(f"Memory savings: {(1 - weight_fp8.numel() / (weight.numel() * 4)) * 100:.1f}%")
+print(f"Memory savings: {(1 - (weight_fp8.numel() * 1) / (weight.numel() * 4)) * 100:.1f}%")
 print()
 
 print("=" * 60)

@@ -101,7 +101,12 @@ def _metal_tensor_to(self, *args, **kwargs):
         (device is None and self.device.type == "mps")
     )
     
-    is_fp8_conversion = dtype in (torch.float8_e4m3fn, torch.float8_e5m2) if hasattr(torch, 'float8_e4m3fn') else False
+    # Check if this is an FP8 conversion - handle both e4m3fn and e5m2
+    is_fp8_conversion = False
+    if hasattr(torch, 'float8_e4m3fn') and dtype == torch.float8_e4m3fn:
+        is_fp8_conversion = True
+    elif hasattr(torch, 'float8_e5m2') and dtype == torch.float8_e5m2:
+        is_fp8_conversion = True
     
     if target_device_is_mps and is_fp8_conversion:
         import fp8_mps_native

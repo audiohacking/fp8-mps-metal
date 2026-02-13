@@ -399,8 +399,6 @@ def test_fp8_conversion():
         # Test 4: Convert from different source dtypes
         print("\n  Test 4: Conversion from different source dtypes")
         for src_dtype in [torch.float32, torch.float16]:
-            if src_dtype == torch.bfloat16 and not torch.backends.mps.is_available():
-                continue
             x = torch.randn(4, 4, dtype=src_dtype, device="mps")
             x_fp8 = x.to(torch.float8_e4m3fn)
             assert x_fp8.dtype == torch.float8_e4m3fn

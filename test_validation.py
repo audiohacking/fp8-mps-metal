@@ -247,7 +247,7 @@ To run these tests:
 def main():
     """Run all validation tests."""
     print("=" * 60)
-    print("Float8_e4m3fn Conversion Support Validation")
+    print("float8_e4m3fn Conversion Support Validation")
     print("=" * 60)
     print(f"PyTorch: {torch.__version__}")
     print(f"Float8_e4m3fn: {hasattr(torch, 'float8_e4m3fn')}")
