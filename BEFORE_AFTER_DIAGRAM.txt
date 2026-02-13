@@ -1,0 +1,124 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    FP8 CONVERSION: BEFORE vs AFTER                           ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+SCENARIO: Convert [1.0, 2.0, 3.0] to FP8 and back to Float32
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ BEFORE (BUGGY BEHAVIOR) ❌                                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+  Input: [1.0, 2.0, 3.0]
+    │
+    │  .to(torch.float8_e4m3fn)
+    │
+    ▼
+  ┌─────────────────────────────────────┐
+  │ fp8_quantize (with auto-scaling)    │
+  │                                     │
+  │ 1. Find max: 3.0                    │
+  │ 2. Compute scale: 448.0 / 3.0       │
+  │    = 149.33                         │
+  │ 3. Scale values:                    │
+  │    [1.0, 2.0, 3.0] × 149.33         │
+  │    = [149.33, 298.67, 448.0]        │
+  │ 4. Encode to FP8                    │
+  │ 5. LOSE the scale! ⚠️                │
+  └─────────────────────────────────────┘
+    │
+    ▼
+  FP8 tensor (internally: [149.33, 298.67, 448.0] encoded)
+    │
+    │  .to(torch.float32)
+    │
+    ▼
+  ┌─────────────────────────────────────┐
+  │ Decode (scale=1.0, no scaling info) │
+  └─────────────────────────────────────┘
+    │
+    ▼
+  Output: [~149.33, ~298.67, ~448.0]
+          
+  ❌ WRONG! Values are 149x too large!
+  Expected: [~1.0, ~2.0, ~3.0]
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ AFTER (FIXED BEHAVIOR) ✅                                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+  Input: [1.0, 2.0, 3.0]
+    │
+    │  .to(torch.float8_e4m3fn)
+    │
+    ▼
+  ┌─────────────────────────────────────┐
+  │ fp8_encode (no auto-scaling)        │
+  │                                     │
+  │ 1. NO scaling applied               │
+  │ 2. Encode values as-is:             │
+  │    [1.0, 2.0, 3.0]                  │
+  │ 3. Clamp to FP8 range if needed     │
+  │    (no clamping needed here)        │
+  └─────────────────────────────────────┘
+    │
+    ▼
+  FP8 tensor (internally: [1.0, 2.0, 3.0] encoded)
+    │
+    │  .to(torch.float32)
+    │
+    ▼
+  ┌─────────────────────────────────────┐
+  │ Decode (scale=1.0)                  │
+  └─────────────────────────────────────┘
+    │
+    ▼
+  Output: [~1.0, ~2.0, ~3.0]
+          
+  ✅ CORRECT! Values preserved within FP8 precision (~7% quantization error)
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                        MATRIX MULTIPLICATION PATH                            ║
+║                     (Still uses scaling - unchanged)                         ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  A = torch.randn(M, K)
+  B = torch.randn(K, N)
+    │
+    │  fp8_quantize() - WITH scaling
+    │
+    ▼
+  A_q, A_scale = fp8_quantize(A)  ← Returns scale!
+  B_q, B_scale = fp8_quantize(B)  ← Returns scale!
+    │
+    │  torch._scaled_mm()
+    │
+    ▼
+  result = torch._scaled_mm(A_q, B_q, scale_a=A_scale, scale_b=B_scale)
+                                      ↑         ↑
+                                      └─────────┘
+                                  Scales provided explicitly
+    │
+    ▼
+  ✅ CORRECT! Matrix multiplication works as expected
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                              KEY INSIGHT                                     ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+Two different use cases need different behavior:
+
+1. VALUE SEMANTICS (.to(), .copy_())
+   • User expects values to be preserved
+   • No separate scale storage
+   • Fix: Use fp8_encode() - no automatic scaling
+
+2. SCALED OPERATIONS (torch._scaled_mm)
+   • Scales managed explicitly
+   • Maximum precision from full FP8 range
+   • Still works: Use fp8_quantize() - with automatic scaling
+
+The bug was using the SCALED path for the VALUE SEMANTICS case!
+
