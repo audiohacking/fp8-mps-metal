@@ -237,6 +237,8 @@ def _metal_tensor_copy(self, src, non_blocking=False):
             src_mps = src
         
         # Quantize to FP8 using our Metal kernel
+        # fp8_quantize uses automatic scaling: scale = 448.0 / max(abs(input))
+        # where 448.0 is the max representable value in e4m3fn format
         quantized_u8, scale = fp8_mps_native.fp8_quantize(src_mps)
         
         # View destination as uint8 for byte-level copy
@@ -245,8 +247,10 @@ def _metal_tensor_copy(self, src, non_blocking=False):
         # Copy quantized bytes
         _original_tensor_copy(self_u8, quantized_u8, non_blocking=non_blocking)
         
-        # Note: scale is discarded, matching PyTorch's behavior for FP8 dtypes
-        # Users must manage scales separately
+        # Note: scale is discarded, matching PyTorch's behavior for FP8 dtypes.
+        # FP8 tensors don't store scale information - users must manage scales
+        # separately for operations like torch._scaled_mm that require them.
+        # The automatic scaling from fp8_quantize ensures values fit in FP8 range.
         return self
     
     # Scenario 3: FP8 source → non-FP8 destination on MPS

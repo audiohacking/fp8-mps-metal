@@ -23,6 +23,14 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Test constants
+# FP8 e4m3fn has ~3 decimal digits of precision, leading to quantization errors
+# We allow 15% relative error to account for:
+# - Quantization error from limited mantissa bits
+# - Dynamic scaling that may not perfectly preserve all values
+# - Edge cases near the format's representable value boundaries
+FP8_E4M3FN_RELATIVE_TOLERANCE = 0.15
+
 
 def fp8_e4m3fn_decode_reference(bits: int) -> float:
     """Pure Python reference decode for e4m3fn format."""
@@ -528,17 +536,20 @@ def test_fp8_conversion():
         result_f32 = fp8_dest_mps.to(torch.float32)
         
         # FP8 has limited precision, so we check approximate equality
-        # The values should be reasonably close given FP8's ~3 decimal digit precision
+        # using the tolerance constant defined at the top of this file
         for i in range(2):
             for j in range(4):
                 expected = f32_source[i, j].item()
                 actual = result_f32[i, j].item()
-                # For FP8 e4m3fn, we expect relative error within ~10%
+                # For non-zero values, check relative error
                 if abs(expected) > 1e-6:  # Avoid division by zero for near-zero values
                     rel_error = abs(actual - expected) / abs(expected)
-                    assert rel_error < 0.15, f"Value mismatch at [{i},{j}]: expected {expected}, got {actual} (rel_error={rel_error:.2%})"
+                    assert rel_error < FP8_E4M3FN_RELATIVE_TOLERANCE, \
+                        f"Value mismatch at [{i},{j}]: expected {expected}, got {actual} (rel_error={rel_error:.2%})"
                 else:
-                    assert abs(actual - expected) < 0.1, f"Value mismatch at [{i},{j}]: expected {expected}, got {actual}"
+                    # For near-zero values, check absolute error
+                    assert abs(actual - expected) < 0.1, \
+                        f"Value mismatch at [{i},{j}]: expected {expected}, got {actual}"
         
         print("    Float32 → FP8 via .copy_(): OK")
 
