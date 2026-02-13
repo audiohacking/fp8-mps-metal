@@ -182,6 +182,23 @@ def _metal_tensor_to(self, *args, **kwargs):
         elif target_is_fp8:
             # FP8 to FP8 dtype conversion (e.g., e4m3fn to e5m2)
             return self.view(torch.uint8).view(target_fp8_dtype)
+        else:
+            # FP8 to non-FP8 conversion (e.g., FP8 to float32/float16)
+            # MPS doesn't support this natively, so we need to dequantize
+            import fp8_mps_native
+            
+            # View as uint8 for dequantization
+            self_u8 = self.view(torch.uint8)
+            
+            # Dequantize using scale=1.0 (no scaling, value-preserving)
+            scale = torch.tensor([1.0], device="mps")
+            dequantized = fp8_mps_native.fp8_dequantize(self_u8, scale)
+            
+            # Convert from float16 (dequantize output) to target dtype if needed
+            if dtype != torch.float16:
+                dequantized = dequantized.to(dtype)
+            
+            return dequantized
     
     # For all other conversions, use the original method
     return _original_tensor_to(self, *args, **kwargs)
