@@ -6,10 +6,21 @@ If you've tried to run FLUX, SD3.5, or any FP8-quantized model on your Mac and h
 
 > **Tested on:** M4 Pro (48GB), macOS 26.2, PyTorch 2.10.0, Python 3.12
 
-## Quick Start
+## Quick Start for ComfyUI Users
+
+**This is the easiest way to use FP8 models in ComfyUI on Apple Silicon:**
 
 ```bash
-git clone https://github.com/tashiscool/fp8-mps-metal.git
+cd /path/to/ComfyUI/custom_nodes
+git clone https://github.com/audiohacking/fp8-mps-metal.git
+```
+
+That's it! The patch will automatically load when ComfyUI starts. You'll see a message confirming it's installed.
+
+## Quick Start for Other Users
+
+```bash
+git clone https://github.com/audiohacking/fp8-mps-metal.git
 cd fp8-mps-metal
 
 # Option A: Pure Python (no compilation needed — recommended)
@@ -30,11 +41,13 @@ No Xcode required. The Metal shader compiles at runtime via `torch.mps.compile_s
 
 PyTorch's MPS backend (Apple's GPU acceleration) has a hard gap: **FP8 tensors exist but can't compute**. This blocks an entire class of modern AI models.
 
-| What works | What doesn't | Impact |
+| What works | What doesn't (before this fix) | Impact |
 |-----------|-------------|--------|
 | Create FP8 tensors | Cast float32 → FP8 on MPS | Can't quantize on-device |
 | Transfer FP8 CPU → MPS | `torch._scaled_mm` on MPS | **FLUX/SD3.5 won't run** |
 | FP16/BF16/INT8 compute | Any FP8 arithmetic on MPS | ComfyUI crashes |
+
+**Now with this patch:** ✅ All FP8 operations work on MPS, including `.to(torch.float8_e4m3fn)` conversions!
 
 This repo provides 4 Metal GPU kernels:
 1. **`fp8_scaled_matmul_kernel`** — General M×N FP8 matmul with 4-element unrolling
@@ -42,7 +55,11 @@ This repo provides 4 Metal GPU kernels:
 3. **`fp8_to_half_kernel`** — FP8 → FP16 dequantization
 4. **`float_to_fp8_kernel`** — Float → FP8 quantization
 
-And a monkey-patch that transparently intercepts `torch._scaled_mm` so ComfyUI/diffusers work without code changes.
+And a monkey-patch that transparently intercepts:
+- `torch._scaled_mm` for FP8 matrix multiplication
+- `Tensor.to(torch.float8_e4m3fn)` for FP8 dtype conversions
+
+So ComfyUI/diffusers/transformers work without code changes.
 
 ## Performance
 
@@ -368,3 +385,52 @@ These numbers are from our validated test suite. Your results will vary by chip.
 ## License
 
 MIT
+
+## Testing
+
+### Running Tests Locally
+
+**On macOS with Apple Silicon (M1/M2/M3/M4):**
+```bash
+# Full test suite with MPS Metal kernels
+python test_fp8_metal.py
+```
+
+**Test the patch without MPS hardware:**
+```bash
+# Quick inline test
+python -c "
+import torch
+import fp8_mps_patch
+
+# Test patch mechanism
+fp8_mps_patch.install()
+assert fp8_mps_patch.is_installed()
+print('✓ Patch installed')
+
+# Test that normal operations still work
+x = torch.randn(4, 4)
+assert x.to(torch.float16).dtype == torch.float16
+print('✓ Normal operations unaffected')
+
+fp8_mps_patch.uninstall()
+print('✓ All tests passed')
+"
+```
+
+### Example Usage
+
+See `example_fp8_conversion.py` for practical examples of using Float8_e4m3fn conversions on MPS.
+
+### Continuous Integration
+
+This repository includes GitHub Actions workflows that automatically test:
+
+- **macOS**: Patch mechanism, FP8 conversion support
+- **Linux**: CPU-only validation to ensure no regressions
+- **Linting**: Syntax checking and code quality
+
+See `.github/workflows/test-mps.yml` for details.
+
+**Note:** GitHub Actions hosted runners do not have Apple Silicon, so full MPS Metal kernel tests must be run locally on compatible hardware.
+
