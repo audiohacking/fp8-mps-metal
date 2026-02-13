@@ -6,10 +6,21 @@ If you've tried to run FLUX, SD3.5, or any FP8-quantized model on your Mac and h
 
 > **Tested on:** M4 Pro (48GB), macOS 26.2, PyTorch 2.10.0, Python 3.12
 
-## Quick Start
+## Quick Start for ComfyUI Users
+
+**This is the easiest way to use FP8 models in ComfyUI on Apple Silicon:**
 
 ```bash
-git clone https://github.com/tashiscool/fp8-mps-metal.git
+cd /path/to/ComfyUI/custom_nodes
+git clone https://github.com/audiohacking/fp8-mps-metal.git
+```
+
+That's it! The patch will automatically load when ComfyUI starts. You'll see a message confirming it's installed.
+
+## Quick Start for Other Users
+
+```bash
+git clone https://github.com/audiohacking/fp8-mps-metal.git
 cd fp8-mps-metal
 
 # Option A: Pure Python (no compilation needed — recommended)
