@@ -512,6 +512,36 @@ def test_fp8_conversion():
         assert torch.equal(dest_u8, src_u8), "Bytes should be preserved in copy_"
         print("    FP8 .copy_() to MPS: OK")
 
+        # Test 9b: Float32 → FP8 conversion via .copy_() on MPS
+        print("\n  Test 9b: Float32 → FP8 via .copy_() on MPS (new scenario)")
+        # This tests the newly added scenario where non-FP8 source is copied to FP8 destination
+        # which would fail without the extended patch
+        f32_source = torch.tensor([[1.0, 2.5, -3.0, 0.5],
+                                    [10.0, -8.0, 0.0, 100.0]], device="mps", dtype=torch.float32)
+        fp8_dest_mps = torch.empty(2, 4, dtype=torch.float8_e4m3fn, device="mps")
+        
+        # This should work with our extended patch
+        fp8_dest_mps.copy_(f32_source)
+        
+        # Verify the copy worked and data is reasonable
+        # Convert back to float32 to check values
+        result_f32 = fp8_dest_mps.to(torch.float32)
+        
+        # FP8 has limited precision, so we check approximate equality
+        # The values should be reasonably close given FP8's ~3 decimal digit precision
+        for i in range(2):
+            for j in range(4):
+                expected = f32_source[i, j].item()
+                actual = result_f32[i, j].item()
+                # For FP8 e4m3fn, we expect relative error within ~10%
+                if abs(expected) > 1e-6:  # Avoid division by zero for near-zero values
+                    rel_error = abs(actual - expected) / abs(expected)
+                    assert rel_error < 0.15, f"Value mismatch at [{i},{j}]: expected {expected}, got {actual} (rel_error={rel_error:.2%})"
+                else:
+                    assert abs(actual - expected) < 0.1, f"Value mismatch at [{i},{j}]: expected {expected}, got {actual}"
+        
+        print("    Float32 → FP8 via .copy_(): OK")
+
         # Test 10: Verify patch can be safely uninstalled
         print("\n  Test 10: Patch uninstall and restoration")
         original_to = fp8_mps_patch._original_tensor_to

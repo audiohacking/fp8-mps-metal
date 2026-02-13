@@ -192,18 +192,21 @@ def _metal_tensor_copy(self, src, non_blocking=False):
     """
     Drop-in replacement for Tensor.copy_() that handles FP8 tensors on MPS.
     
-    Intercepts copy operations where source is FP8 and destination is MPS,
+    Intercepts copy operations where either source or destination is FP8 on MPS,
     which would otherwise fail with "does not have support for that dtype".
     
-    This handles the ComfyUI scenario where stochastic_rounding creates FP8
-    tensors and tries to copy them into MPS tensors using .copy_().
+    This handles multiple ComfyUI scenarios:
+    1. FP8 source → FP8 destination on MPS (stochastic_rounding)
+    2. Non-FP8 source → FP8 destination on MPS (dtype conversion during copy)
     """
     # Check if source is FP8 and destination (self) is MPS
     source_is_fp8 = _is_fp8_dtype(src.dtype)
+    dest_is_fp8 = _is_fp8_dtype(self.dtype)
     dest_is_mps = self.device.type == "mps"
     
-    # Scenario: FP8 source → MPS destination (the problematic case in ComfyUI)
-    if source_is_fp8 and dest_is_mps:
+    # Scenario 1: FP8 source → FP8 destination on MPS
+    # This is the original case: pre-quantized FP8 data being copied to MPS
+    if source_is_fp8 and dest_is_mps and dest_is_fp8:
         # Convert FP8 to uint8 (raw bytes), copy, then view back as FP8
         # This avoids MPS's dtype conversion which doesn't support FP8
         
@@ -214,20 +217,45 @@ def _metal_tensor_copy(self, src, non_blocking=False):
         src_u8 = src_contig.view(torch.uint8)
         
         # View destination as uint8 for byte-level copy
-        if _is_fp8_dtype(self.dtype):
-            # Destination is already FP8, view as uint8
-            self_u8 = self.view(torch.uint8)
-        else:
-            # Destination is not FP8, we need to handle dtype conversion
-            # This shouldn't happen in the ComfyUI scenario, but handle it anyway
-            # In this case, we can't do a simple byte copy - fall through to original
-            return _original_tensor_copy(self, src, non_blocking=non_blocking)
+        self_u8 = self.view(torch.uint8)
         
         # Copy uint8 bytes using original copy_ (which works for uint8)
         _original_tensor_copy(self_u8, src_u8, non_blocking=non_blocking)
         
         # Return self (copy_ returns self)
         return self
+    
+    # Scenario 2: Non-FP8 source → FP8 destination on MPS
+    # This handles dtype conversion during copy, which MPS doesn't support natively
+    if not source_is_fp8 and dest_is_fp8 and dest_is_mps:
+        import fp8_mps_native
+        
+        # First, move source to MPS if needed (without dtype change)
+        if src.device.type != "mps":
+            src_mps = src.to(device="mps", dtype=src.dtype)
+        else:
+            src_mps = src
+        
+        # Quantize to FP8 using our Metal kernel
+        quantized_u8, scale = fp8_mps_native.fp8_quantize(src_mps)
+        
+        # View destination as uint8 for byte-level copy
+        self_u8 = self.view(torch.uint8)
+        
+        # Copy quantized bytes
+        _original_tensor_copy(self_u8, quantized_u8, non_blocking=non_blocking)
+        
+        # Note: scale is discarded, matching PyTorch's behavior for FP8 dtypes
+        # Users must manage scales separately
+        return self
+    
+    # Scenario 3: FP8 source → non-FP8 destination on MPS
+    # This would require dequantization, which should fall through to original
+    # and likely fail, but we let PyTorch handle it
+    if source_is_fp8 and dest_is_mps and not dest_is_fp8:
+        # This case needs dequantization which .copy_() doesn't handle
+        # Fall through to original and let it fail or handle it
+        return _original_tensor_copy(self, src, non_blocking=non_blocking)
     
     # For all other copy operations, use the original method
     return _original_tensor_copy(self, src, non_blocking=non_blocking)
