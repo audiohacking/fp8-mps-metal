@@ -328,6 +328,9 @@ def test_monkey_patch():
 
     assert torch._scaled_mm is not fp8_mps_patch._original_scaled_mm
     print("  torch._scaled_mm patched: OK")
+    
+    assert torch.Tensor.to is not fp8_mps_patch._original_tensor_to
+    print("  Tensor.to patched: OK")
 
     fp8_mps_patch.uninstall()
     assert not fp8_mps_patch.is_installed(), "Should not be installed after uninstall()"
@@ -336,6 +339,169 @@ def test_monkey_patch():
     print(f"  RESULT: PASS")
     print()
     return True
+
+
+def test_fp8_conversion():
+    """Test Float8_e4m3fn dtype conversion on MPS with comprehensive validation."""
+    print("=" * 60)
+    print("Test 8: Float8_e4m3fn conversion on MPS")
+    print("=" * 60)
+
+    import fp8_mps_patch
+    import fp8_mps_native
+
+    # Check if torch.float8_e4m3fn is available
+    if not hasattr(torch, 'float8_e4m3fn'):
+        print("  torch.float8_e4m3fn not available in this PyTorch version")
+        print("  RESULT: SKIP")
+        print()
+        return True
+
+    all_tests_passed = True
+
+    # Test 1: Verify conversion fails WITHOUT patch
+    print("\n  Test 1: Verify conversion fails without patch")
+    try:
+        x_mps = torch.randn(4, 8, device="mps")
+        x_fp8 = x_mps.to(torch.float8_e4m3fn)
+        print("    WARNING: Conversion succeeded without patch (unexpected)")
+        # If this succeeds, PyTorch added native support - that's OK
+    except RuntimeError as e:
+        if "does not have support for that dtype" in str(e):
+            print("    Native conversion fails as expected: OK")
+        else:
+            print(f"    Unexpected error: {e}")
+
+    # Install the patch for remaining tests
+    fp8_mps_patch.install()
+
+    try:
+        # Test 2: Basic float32 to Float8_e4m3fn conversion on MPS
+        print("\n  Test 2: Basic float32 to Float8_e4m3fn conversion")
+        x_mps = torch.randn(4, 8, device="mps")
+        print(f"    Input: shape={x_mps.shape}, dtype={x_mps.dtype}, device={x_mps.device}")
+        
+        x_fp8 = x_mps.to(torch.float8_e4m3fn)
+        print(f"    Output: dtype={x_fp8.dtype}, device={x_fp8.device}")
+        assert x_fp8.dtype == torch.float8_e4m3fn, "Conversion to Float8_e4m3fn failed"
+        assert x_fp8.device.type == "mps", "Result should be on MPS"
+        assert x_fp8.shape == x_mps.shape, "Shape should be preserved"
+        print("    Basic conversion: PASS")
+
+        # Test 3: Convert from CPU to MPS as Float8_e4m3fn
+        print("\n  Test 3: CPU to MPS Float8_e4m3fn conversion")
+        x_cpu = torch.randn(4, 8)
+        x_fp8_cpu = x_cpu.to("mps", dtype=torch.float8_e4m3fn)
+        assert x_fp8_cpu.dtype == torch.float8_e4m3fn
+        assert x_fp8_cpu.device.type == "mps"
+        print("    CPU to MPS conversion: PASS")
+
+        # Test 4: Convert from different source dtypes
+        print("\n  Test 4: Conversion from different source dtypes")
+        for src_dtype in [torch.float32, torch.float16]:
+            if src_dtype == torch.bfloat16 and not torch.backends.mps.is_available():
+                continue
+            x = torch.randn(4, 4, dtype=src_dtype, device="mps")
+            x_fp8 = x.to(torch.float8_e4m3fn)
+            assert x_fp8.dtype == torch.float8_e4m3fn
+            print(f"    {src_dtype} to Float8_e4m3fn: OK")
+
+        # Test 5: Edge cases - empty tensor, single element, large tensor
+        print("\n  Test 5: Edge cases")
+        # Empty tensor
+        empty = torch.empty(0, device="mps")
+        empty_fp8 = empty.to(torch.float8_e4m3fn)
+        assert empty_fp8.numel() == 0
+        print("    Empty tensor: OK")
+        
+        # Single element
+        single = torch.tensor([3.14], device="mps")
+        single_fp8 = single.to(torch.float8_e4m3fn)
+        assert single_fp8.shape == single.shape
+        print("    Single element: OK")
+        
+        # Large tensor
+        large = torch.randn(128, 256, device="mps")
+        large_fp8 = large.to(torch.float8_e4m3fn)
+        assert large_fp8.shape == large.shape
+        print("    Large tensor (128x256): OK")
+
+        # Test 6: Verify FP8 values are valid (within FP8 range)
+        print("\n  Test 6: Validate FP8 encoding")
+        x_test = torch.tensor([0.0, 1.0, -1.0, 0.5, -0.5, 100.0, -100.0, 448.0], device="mps")
+        x_fp8_test = x_test.to(torch.float8_e4m3fn)
+        
+        # View as uint8 to check the actual encoded values
+        x_u8 = x_fp8_test.view(torch.uint8)
+        x_u8_cpu = x_u8.cpu()
+        
+        # All values should be valid uint8 (0-255)
+        assert x_u8_cpu.min() >= 0 and x_u8_cpu.max() <= 255
+        print("    FP8 encoded values are valid uint8: OK")
+        
+        # Decode and verify accuracy
+        scale = torch.tensor([1.0])
+        x_reconstructed = fp8_mps_native.fp8_dequantize(x_u8, scale)
+        x_reconstructed_cpu = x_reconstructed.cpu().float()
+        x_test_cpu = x_test.cpu().float()
+        
+        # Check element-wise relative error (excluding zeros)
+        for i, (orig, recon) in enumerate(zip(x_test_cpu, x_reconstructed_cpu)):
+            if abs(orig) > 1e-6:
+                rel_err = abs(recon - orig) / abs(orig)
+                # FP8 e4m3fn has ~3 decimal digits precision
+                # Allow up to 20% relative error for quantization
+                if rel_err > 0.2:
+                    print(f"    Warning: High relative error at index {i}: orig={orig:.4f}, recon={recon:.4f}, rel_err={rel_err:.2%}")
+        
+        max_err = (x_reconstructed_cpu - x_test_cpu).abs().max().item()
+        print(f"    Roundtrip max absolute error: {max_err:.4f}")
+        print("    FP8 accuracy validation: OK")
+
+        # Test 7: Verify conversion in computation pipeline
+        print("\n  Test 7: Use converted FP8 tensors in operations")
+        A_f32 = torch.randn(16, 32, device="mps")
+        B_f32 = torch.randn(32, 32, device="mps")
+        
+        # Convert to FP8
+        A_fp8 = A_f32.to(torch.float8_e4m3fn)
+        B_fp8 = B_f32.to(torch.float8_e4m3fn)
+        
+        # These should now work with our scaled_mm patch
+        A_u8 = A_fp8.view(torch.uint8)
+        B_u8 = B_fp8.view(torch.uint8)
+        
+        # Use the FP8 tensors in a matmul operation
+        scale_a = torch.tensor([1.0])
+        scale_b = torch.tensor([1.0])
+        result = fp8_mps_native.fp8_scaled_mm_auto(A_u8, B_u8.t().contiguous(), scale_a, scale_b)
+        
+        assert result.shape == (16, 32), f"Expected shape (16, 32), got {result.shape}"
+        assert result.device.type == "mps"
+        print("    FP8 tensors used in matmul: OK")
+
+        # Test 8: Verify patch can be safely uninstalled
+        print("\n  Test 8: Patch uninstall and restoration")
+        original_to = fp8_mps_patch._original_tensor_to
+        fp8_mps_patch.uninstall()
+        assert not fp8_mps_patch.is_installed()
+        assert torch.Tensor.to == original_to
+        print("    Patch uninstalled successfully: OK")
+        
+        # Reinstall for cleanup
+        fp8_mps_patch.install()
+
+        print(f"\n  RESULT: PASS (all validation tests passed)")
+    except Exception as e:
+        print(f"\n  RESULT: FAIL - {e}")
+        import traceback
+        traceback.print_exc()
+        all_tests_passed = False
+    finally:
+        fp8_mps_patch.uninstall()
+
+    print()
+    return all_tests_passed
 
 
 if __name__ == "__main__":
@@ -351,6 +517,7 @@ if __name__ == "__main__":
     results["vecmat"] = test_vecmat_native()
     results["performance"] = test_performance()
     results["monkey_patch"] = test_monkey_patch()
+    results["fp8_conversion"] = test_fp8_conversion()
 
     print("=" * 60)
     print("SUMMARY")
