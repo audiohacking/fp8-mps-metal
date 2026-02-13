@@ -30,11 +30,13 @@ No Xcode required. The Metal shader compiles at runtime via `torch.mps.compile_s
 
 PyTorch's MPS backend (Apple's GPU acceleration) has a hard gap: **FP8 tensors exist but can't compute**. This blocks an entire class of modern AI models.
 
-| What works | What doesn't | Impact |
+| What works | What doesn't (before this fix) | Impact |
 |-----------|-------------|--------|
 | Create FP8 tensors | Cast float32 → FP8 on MPS | Can't quantize on-device |
 | Transfer FP8 CPU → MPS | `torch._scaled_mm` on MPS | **FLUX/SD3.5 won't run** |
 | FP16/BF16/INT8 compute | Any FP8 arithmetic on MPS | ComfyUI crashes |
+
+**Now with this patch:** ✅ All FP8 operations work on MPS, including `.to(torch.float8_e4m3fn)` conversions!
 
 This repo provides 4 Metal GPU kernels:
 1. **`fp8_scaled_matmul_kernel`** — General M×N FP8 matmul with 4-element unrolling
@@ -42,7 +44,11 @@ This repo provides 4 Metal GPU kernels:
 3. **`fp8_to_half_kernel`** — FP8 → FP16 dequantization
 4. **`float_to_fp8_kernel`** — Float → FP8 quantization
 
-And a monkey-patch that transparently intercepts `torch._scaled_mm` so ComfyUI/diffusers work without code changes.
+And a monkey-patch that transparently intercepts:
+- `torch._scaled_mm` for FP8 matrix multiplication
+- `Tensor.to(torch.float8_e4m3fn)` for FP8 dtype conversions
+
+So ComfyUI/diffusers/transformers work without code changes.
 
 ## Performance
 
@@ -368,3 +374,36 @@ These numbers are from our validated test suite. Your results will vary by chip.
 ## License
 
 MIT
+
+## Testing
+
+### Running Tests Locally
+
+**On macOS with Apple Silicon (M1/M2/M3/M4):**
+```bash
+# Full test suite with MPS Metal kernels
+python test_fp8_metal.py
+
+# Quick validation
+python test_validation.py
+```
+
+**On any platform (CPU-only validation):**
+```bash
+# Validates patch logic without requiring MPS
+python test_validation.py
+python test_fp8_conversion_cpu.py
+```
+
+### Continuous Integration
+
+This repository includes GitHub Actions workflows that automatically test:
+
+- **macOS**: Patch mechanism, argument parsing, FP8 dtype support
+- **Linux**: CPU-only validation to ensure no regressions
+- **Linting**: Syntax checking and code quality with ruff
+
+See `.github/workflows/test-mps.yml` for details.
+
+**Note:** GitHub Actions hosted runners do not have Apple Silicon, so full MPS Metal kernel tests must be run locally on compatible hardware.
+
