@@ -704,8 +704,6 @@ def test_fp8_value_preservation():
     finally:
         fp8_mps_patch.uninstall()
 
-    print()
-
 
 if __name__ == "__main__":
     print(f"PyTorch {torch.__version__}, MPS available: {torch.backends.mps.is_available()}")
