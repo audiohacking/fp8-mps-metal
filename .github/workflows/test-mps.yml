@@ -97,10 +97,6 @@ jobs:
         fp8_mps_patch.uninstall()
         "
     
-    - name: Test example script (syntax check)
-      run: |
-        python -m py_compile example_fp8_conversion.py
-    
     - name: Summary
       if: always()
       run: |
@@ -143,7 +139,7 @@ jobs:
         python -m py_compile fp8_mps_patch.py
         python -m py_compile fp8_mps_native.py
         python -m py_compile test_fp8_metal.py
-        python -m py_compile example_fp8_conversion.py
+        python -m py_compile test_mps_validation.py
         echo "✓ All Python files compile successfully"
     
     - name: Run ruff linter
