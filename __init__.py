@@ -12,6 +12,11 @@ The patch will be automatically installed when ComfyUI loads this custom node.
 
 import sys
 import os
+
+# Enable MPS fallback to CPU for unsupported operations
+# This must be set BEFORE importing torch
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
 import torch
 
 # Add current directory to path so we can import fp8_mps_patch
@@ -34,6 +39,7 @@ try:
         print("\n" + "=" * 70)
         print("✓ FP8 MPS Metal patch installed successfully!")
         print("=" * 70)
+        print("PYTORCH_ENABLE_MPS_FALLBACK: Enabled (auto CPU fallback)")
         
         if backend_name == "native":
             print("Backend: Native (torch.mps.compile_shader)")
