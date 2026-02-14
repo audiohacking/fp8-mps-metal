@@ -384,25 +384,64 @@ These numbers are from our validated test suite. Your results will vary by chip.
 
 ## Troubleshooting
 
-### AttributeError: module 'torch.mps' has no attribute 'compile_shader'
+### For ComfyUI Users
 
-This error occurs when using PyTorch versions older than 2.10. The `torch.mps.compile_shader()` API was introduced in PyTorch 2.10.
+This extension automatically selects the best available backend:
+- **Native backend** (PyTorch 2.10+) - Zero-copy, fastest
+- **C++ extension fallback** (PyTorch 2.4+) - Requires compilation but works with older PyTorch
 
-**Solutions:**
+When you start ComfyUI, check the console output to see which backend is active.
 
-1. **Upgrade PyTorch (Recommended):**
-   ```bash
-   pip install --upgrade torch torchvision
-   ```
+#### "No FP8 backend available" Error
 
-2. **Use the C++ extension fallback:**
-   ```bash
-   cd /path/to/fp8-mps-metal
-   pip install -e .
-   ```
-   Then modify your code to use `import fp8_metal` instead of the native implementation.
+If you see this error, you have PyTorch < 2.10 and need to build the C++ extension:
+
+**Option 1: Build the Extension (Recommended for ComfyUI)**
+```bash
+# Navigate to the custom node directory
+cd ComfyUI/custom_nodes/fp8-mps-metal/
+
+# Install Xcode Command Line Tools (if not already installed)
+xcode-select --install
+
+# Build and install the C++ extension
+pip install -e .
+
+# Restart ComfyUI
+```
+
+**Option 2: Upgrade PyTorch (If you manage your own environment)**
+```bash
+pip install --upgrade torch torchvision
+```
+
+Note: ComfyUI may manage its own PyTorch installation, so Option 1 is usually better.
+
+### For Other Users
+
+#### AttributeError: module 'torch.mps' has no attribute 'compile_shader'
+
+This error means you have PyTorch < 2.10. The library will automatically fall back to the C++ extension if available.
+
+**Solution 1: Upgrade PyTorch (Recommended)**
+```bash
+pip install --upgrade torch torchvision
+```
+
+**Solution 2: Build C++ Extension**
+```bash
+cd /path/to/fp8-mps-metal
+pip install -e .
+```
 
 The C++ extension provides similar functionality but uses metal-cpp and pybind11 instead of the native PyTorch API.
+
+### Build Requirements for C++ Extension
+
+- **Xcode Command Line Tools**: `xcode-select --install`
+- **metal-cpp**: Auto-downloaded during build
+- **PyTorch**: 2.4+ (for `torch._scaled_mm`)
+- **Python**: 3.10+
 
 ## Related Resources
 

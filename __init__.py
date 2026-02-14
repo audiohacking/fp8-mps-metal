@@ -21,12 +21,29 @@ if current_dir not in sys.path:
 # Import and install the patch
 try:
     import fp8_mps_patch
+    import fp8_backend
     
     # Install the patch automatically
     if not fp8_mps_patch.is_installed():
         fp8_mps_patch.install()
+        
+        # Check which backend is available
+        backend, backend_name = fp8_backend.get_backend()
+        
         print("\n" + "=" * 70)
         print("✓ FP8 MPS Metal patch installed successfully!")
+        print("=" * 70)
+        
+        if backend_name == "native":
+            print("Backend: Native (torch.mps.compile_shader)")
+            print(f"PyTorch version: {__import__('torch').__version__}")
+        elif backend_name == "cpp":
+            print("Backend: C++ Extension (metal-cpp)")
+            print("Note: Native backend (PyTorch 2.10+) would be faster")
+        else:
+            print("⚠️  WARNING: No FP8 backend available!")
+            print(fp8_backend.get_error_message())
+            
         print("=" * 70)
         print("Float8_e4m3fn operations on MPS are now supported.")
         print("This enables:")

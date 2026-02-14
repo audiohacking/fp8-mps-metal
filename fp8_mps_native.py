@@ -13,6 +13,22 @@ import os
 
 _lib = None
 _SHADER_SOURCE = None
+_compile_shader_available = None
+
+
+def is_available():
+    """
+    Check if torch.mps.compile_shader is available.
+    
+    Returns:
+        bool: True if the native implementation can be used (PyTorch 2.10+)
+    """
+    global _compile_shader_available
+    if _compile_shader_available is not None:
+        return _compile_shader_available
+    
+    _compile_shader_available = hasattr(torch.mps, 'compile_shader')
+    return _compile_shader_available
 
 
 def _load_shader_source():
@@ -28,29 +44,19 @@ def _load_shader_source():
 
 
 def _get_lib():
-    """Get or create the compiled shader library (singleton)."""
+    """
+    Get or create the compiled shader library (singleton).
+    
+    Returns:
+        The compiled shader library, or None if torch.mps.compile_shader is unavailable.
+    """
     global _lib
     if _lib is not None:
         return _lib
 
     # Check if torch.mps.compile_shader is available (requires PyTorch 2.10+)
-    if not hasattr(torch.mps, 'compile_shader'):
-        raise AttributeError(
-            "torch.mps.compile_shader is not available in your PyTorch version.\n"
-            "\n"
-            "This feature requires PyTorch 2.10 or later.\n"
-            "\n"
-            "Solutions:\n"
-            "1. Upgrade PyTorch to 2.10+:\n"
-            "   pip install --upgrade torch torchvision\n"
-            "\n"
-            "2. Use the C++ extension fallback (requires compilation):\n"
-            "   cd /path/to/fp8-mps-metal\n"
-            "   pip install -e .\n"
-            "   Then use 'import fp8_metal' instead of 'fp8_mps_native'\n"
-            "\n"
-            f"Your current PyTorch version: {torch.__version__}"
-        )
+    if not is_available():
+        return None
 
     source = _load_shader_source()
     _lib = torch.mps.compile_shader(source)
