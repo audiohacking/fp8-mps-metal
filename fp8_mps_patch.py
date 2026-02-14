@@ -49,7 +49,7 @@ def _metal_scaled_mm(input, other, *, out_dtype=None, scale_a=None, scale_b=None
             use_fast_accum=use_fast_accum,
         )
 
-    import fp8_mps_native
+    import fp8_backend
 
     # Handle FP8 dtype tensors by viewing as uint8
     if input.dtype != torch.uint8:
@@ -67,7 +67,7 @@ def _metal_scaled_mm(input, other, *, out_dtype=None, scale_a=None, scale_b=None
     if scale_b is None:
         scale_b = torch.tensor([1.0], device=input.device)
 
-    result = fp8_mps_native.fp8_scaled_mm_auto(input, B, scale_a, scale_b)
+    result = fp8_backend.fp8_scaled_mm_auto(input, B, scale_a, scale_b)
 
     # Apply bias if provided
     if bias is not None:
@@ -154,7 +154,7 @@ def _metal_tensor_to(self, *args, **kwargs):
     # Scenario 2: Float/other tensor -> FP8 on MPS (quantization)
     # This handles on-the-fly quantization
     if target_device_is_mps and target_is_fp8 and not source_is_fp8:
-        import fp8_mps_native
+        import fp8_backend
         
         # First move to MPS if not already there (using original method with non-FP8 dtype)
         if self.device.type != "mps":
@@ -166,7 +166,7 @@ def _metal_tensor_to(self, *args, **kwargs):
         
         # Use fp8_encode to convert to FP8 without scaling
         # This preserves value semantics (no automatic scaling)
-        quantized_u8 = fp8_mps_native.fp8_encode(tensor_mps)
+        quantized_u8 = fp8_backend.fp8_encode(tensor_mps)
         
         # View the uint8 as the requested FP8 dtype
         result = quantized_u8.view(target_fp8_dtype)
@@ -185,14 +185,14 @@ def _metal_tensor_to(self, *args, **kwargs):
         else:
             # FP8 to non-FP8 conversion (e.g., FP8 to float32/float16)
             # MPS doesn't support this natively, so we need to dequantize
-            import fp8_mps_native
+            import fp8_backend
             
             # View as uint8 for dequantization
             self_u8 = self.view(torch.uint8)
             
             # Dequantize using scale=1.0 (no scaling, value-preserving)
             scale = torch.tensor([1.0], device="mps")
-            dequantized = fp8_mps_native.fp8_dequantize(self_u8, scale)
+            dequantized = fp8_backend.fp8_dequantize(self_u8, scale)
             
             # Convert from float16 (dequantize output) to target dtype if needed
             if dtype != torch.float16:
@@ -244,7 +244,7 @@ def _metal_tensor_copy(self, src, non_blocking=False):
     # Scenario 2: Non-FP8 source → FP8 destination on MPS
     # This handles dtype conversion during copy, which MPS doesn't support natively
     if not source_is_fp8 and dest_is_fp8 and dest_is_mps:
-        import fp8_mps_native
+        import fp8_backend
         
         # First, move source to MPS if needed (without dtype change)
         if src.device.type != "mps":
@@ -255,7 +255,7 @@ def _metal_tensor_copy(self, src, non_blocking=False):
         # Encode to FP8 using our Metal kernel (without automatic scaling)
         # This preserves value semantics - values are clamped to [-448, 448]
         # but not scaled to use the full FP8 range
-        quantized_u8 = fp8_mps_native.fp8_encode(src_mps)
+        quantized_u8 = fp8_backend.fp8_encode(src_mps)
         
         # View destination as uint8 for byte-level copy
         self_u8 = self.view(torch.uint8)
