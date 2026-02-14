@@ -26,6 +26,8 @@ git clone https://github.com/audiohacking/fp8-mps-metal.git
 
 That's it! The patch will automatically load when ComfyUI starts. You'll see a message confirming it's installed.
 
+**Note:** This custom node automatically sets `PYTORCH_ENABLE_MPS_FALLBACK=1` for better compatibility with unsupported operations.
+
 ## Quick Start for Other Users
 
 ```bash
@@ -296,15 +298,11 @@ git clone https://github.com/comfyanonymous/ComfyUI.git
 cd ComfyUI
 pip install -r requirements.txt
 
-# Required environment variables
-export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0
-export PYTORCH_ENABLE_MPS_FALLBACK=1
-
 # For FP8 models (FLUX, SD3.5):
-# Install fp8-mps-metal and add to ComfyUI's startup
-pip install -e /path/to/fp8-mps-metal
-# Add to ComfyUI/main.py or a custom node:
-import fp8_mps_patch; fp8_mps_patch.install()
+# Install fp8-mps-metal custom node (automatically sets PYTORCH_ENABLE_MPS_FALLBACK=1)
+cd custom_nodes
+git clone https://github.com/audiohacking/fp8-mps-metal.git
+cd ..
 
 # Run with memory optimizations
 python main.py --force-fp16 --use-split-cross-attention
