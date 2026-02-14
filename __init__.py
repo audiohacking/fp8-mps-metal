@@ -12,6 +12,7 @@ The patch will be automatically installed when ComfyUI loads this custom node.
 
 import sys
 import os
+import torch
 
 # Add current directory to path so we can import fp8_mps_patch
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -36,7 +37,7 @@ try:
         
         if backend_name == "native":
             print("Backend: Native (torch.mps.compile_shader)")
-            print(f"PyTorch version: {__import__('torch').__version__}")
+            print(f"PyTorch version: {torch.__version__}")
         elif backend_name == "cpp":
             print("Backend: C++ Extension (metal-cpp)")
             print("Note: Native backend (PyTorch 2.10+) would be faster")

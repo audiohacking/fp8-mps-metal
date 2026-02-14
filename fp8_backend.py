@@ -81,7 +81,6 @@ def get_error_message():
     msg = "No FP8 backend available for MPS.\n\n"
     
     # Check PyTorch version
-    import torch
     msg += f"Your PyTorch version: {torch.__version__}\n\n"
     
     # Check if torch.mps.compile_shader exists
