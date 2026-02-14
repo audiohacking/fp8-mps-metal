@@ -15,7 +15,8 @@ import os
 
 # Enable MPS fallback to CPU for unsupported operations
 # This must be set BEFORE importing torch
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+# Use setdefault to allow users to override if needed
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import torch
 
@@ -39,7 +40,11 @@ try:
         print("\n" + "=" * 70)
         print("✓ FP8 MPS Metal patch installed successfully!")
         print("=" * 70)
-        print("PYTORCH_ENABLE_MPS_FALLBACK: Enabled (auto CPU fallback)")
+        
+        # Show the actual MPS fallback setting
+        mps_fallback = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", "not set")
+        fallback_status = "Enabled" if mps_fallback == "1" else f"Disabled (={mps_fallback})"
+        print(f"PYTORCH_ENABLE_MPS_FALLBACK: {fallback_status}")
         
         if backend_name == "native":
             print("Backend: Native (torch.mps.compile_shader)")
