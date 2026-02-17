@@ -56,7 +56,7 @@ inline uint8_t float_to_fp8_e4m3fn(float val) {
 
     // Min subnormal: 2^(-9) = 1/512
     if (val < (1.0f / 512.0f)) {
-        return 0;  // flush to zero
+        return sign << 7;  // Preserve sign for zero
     }
 
     // Try subnormal first: val = mant/8 * 2^(-6)
