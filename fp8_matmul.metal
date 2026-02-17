@@ -56,13 +56,15 @@ inline uint8_t float_to_fp8_e4m3fn(float val) {
 
     // Min subnormal: 2^(-9) = 1/512
     if (val < (1.0f / 512.0f)) {
-        return 0;  // flush to zero
+        return sign << 7;  // Preserve sign for zero
     }
 
     // Try subnormal first: val = mant/8 * 2^(-6)
     // mant = val * 8 * 64 = val * 512
     if (val < (1.0f / 64.0f)) {
-        uint mant = uint(val * 512.0f + 0.5f);
+        // Round-half-to-even (banker's rounding) to match PyTorch CPU
+        float mant_f = val * 512.0f;
+        uint mant = uint(rint(mant_f));
         mant = min(mant, 7u);
         return (sign << 7) | uint8_t(mant);
     }
@@ -73,7 +75,9 @@ inline uint8_t float_to_fp8_e4m3fn(float val) {
     exp_val = clamp(exp_val, -6, 8);
 
     float mantissa = val / exp2(float(exp_val));  // 1.xxx
-    uint mant = uint((mantissa - 1.0f) * 8.0f + 0.5f);
+    // Round-half-to-even (banker's rounding) to match PyTorch CPU
+    float mant_f = (mantissa - 1.0f) * 8.0f;
+    uint mant = uint(rint(mant_f));
     mant = min(mant, 7u);
 
     uint exp_bits = uint(exp_val + 7);  // add bias
