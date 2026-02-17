@@ -215,6 +215,9 @@ def _metal_tensor_copy(self, src, non_blocking=False):
     1. FP8 source → FP8 destination on MPS (stochastic_rounding)
     2. Non-FP8 source → FP8 destination on MPS (dtype conversion during copy)
     """
+    # Check if source is a plain Python int rather than a tensor 
+    if not hasattr(src, 'dtype'):
+        return _original_tensor_copy(self, src, non_blocking=non_blocking)
     # Check if source is FP8 and destination (self) is MPS
     source_is_fp8 = _is_fp8_dtype(src.dtype)
     dest_is_fp8 = _is_fp8_dtype(self.dtype)
