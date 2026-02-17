@@ -403,6 +403,15 @@ MIT
 ```bash
 # Full test suite with MPS Metal kernels
 python test_fp8_metal.py
+
+# MPS vs CPU validation (recommended for verifying correctness)
+python test_mps_vs_cpu.py
+
+# FP8 spec correctness validation
+python test_fp8_correctness.py
+
+# Cross-implementation validation (Metal vs C++)
+python test_cross_validation.py
 ```
 
 **Test the patch without MPS hardware:**
@@ -425,6 +434,18 @@ print('✓ Normal operations unaffected')
 fp8_mps_patch.uninstall()
 print('✓ All tests passed')
 "
+```
+
+**Recommended testing workflow for validating conversions:**
+```bash
+# 1. Verify spec compliance (can run on any system)
+python test_fp8_correctness.py
+
+# 2. Validate MPS vs CPU consistency (requires Apple Silicon)
+python test_mps_vs_cpu.py
+
+# 3. Run full integration tests (requires Apple Silicon)
+python test_fp8_metal.py
 ```
 
 ### Example Usage

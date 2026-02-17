@@ -14,6 +14,11 @@ import sys
 import math
 
 
+# Test thresholds as named constants
+MAX_NORMAL_ERROR_THRESHOLD = 0.07  # 7% max relative error for normal values
+                                    # FP8 e4m3fn has 3 mantissa bits, giving ~1/16 = 6.25% quantization
+
+
 def fp8_e4m3fn_decode_spec(bits: int) -> float:
     """
     Reference FP8 e4m3fn decoder based on IEEE specification.
@@ -23,9 +28,11 @@ def fp8_e4m3fn_decode_spec(bits: int) -> float:
     - NaN: exponent=15, mantissa=7
     - Max value: 448.0 (exp=15, mant=6)
     """
-    # NaN handling
+    # NaN handling: Map NaN to zero (matches Metal shader behavior)
+    # FP8 E4M3FN spec: NaN values (0x7F, 0xFF) are not used in computations
+    # and are flushed to zero for safety. This matches the Metal implementation.
     if (bits & 0x7F) == 0x7F:
-        return 0.0  # Map NaN to zero
+        return 0.0
     
     sign = (bits >> 7) & 1
     exp_bits = (bits >> 3) & 0xF
@@ -112,7 +119,11 @@ def test_all_256_values():
         decoded = fp8_e4m3fn_decode_spec(bits)
         reencoded = fp8_e4m3fn_encode_spec(decoded)
         
-        # Allow NaN and negative zero to map to positive zero
+        # Allow specific bit patterns that normalize during roundtrip:
+        # - 0x7F (NaN) → 0.0 → 0x00 (positive zero)
+        # - 0xFF (NaN with sign) → 0.0 → 0x00 (positive zero)
+        # - 0x80 (negative zero) → -0.0 → 0x00 (positive zero)
+        # This is expected behavior: NaN and -0 are not preserved
         if bits in [0x7F, 0xFF, 0x80] and reencoded == 0x00:
             continue
         
@@ -144,11 +155,11 @@ def test_special_values():
         ("Zero", 0.0, 0x00),
         # Note: Negative zero may map to 0x00 (acceptable behavior)
         # ("Negative zero", -0.0, 0x80),
-        ("Min subnormal", 0.001953125, 0x01),
-        ("Max subnormal", 0.013671875, 0x07),
-        ("Min normal", 0.015625, 0x08),
+        ("Min subnormal", 0.001953125, 0x01),  # exp=0, mant=1: 2^(-6) * (1/8)
+        ("Max subnormal", 0.013671875, 0x07),  # exp=0, mant=7: 2^(-6) * (7/8) = 0.013671875
+        ("Min normal", 0.015625, 0x08),        # exp=1, mant=0: 2^(-6) * 1.0 = 0.015625
         ("One", 1.0, 0x38),
-        ("Max normal", 448.0, 0x7E),
+        ("Max normal", 448.0, 0x7E),           # exp=15, mant=6: 2^8 * 1.75 = 448.0
         ("Overflow (should clamp)", 500.0, 0x7E),
     ]
     
@@ -267,8 +278,8 @@ def test_quantization_error():
     print(f"Maximum relative error for normal numbers: {max_normal_error:.2%}")
     print()
     
-    if max_normal_error < 0.07:  # 7% threshold for normal numbers
-        print("✓ Quantization error within expected bounds (<7% for normal values)")
+    if max_normal_error < MAX_NORMAL_ERROR_THRESHOLD:
+        print(f"✓ Quantization error within expected bounds (<{MAX_NORMAL_ERROR_THRESHOLD:.0%} for normal values)")
         print()
         return True
     else:
