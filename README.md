@@ -26,6 +26,8 @@ git clone https://github.com/audiohacking/fp8-mps-metal.git
 
 That's it! The patch will automatically load when ComfyUI starts. You'll see a message confirming it's installed.
 
+**Note:** This custom node automatically sets `PYTORCH_ENABLE_MPS_FALLBACK=1` for better compatibility with unsupported operations.
+
 ## Quick Start for Other Users
 
 ```bash
@@ -296,15 +298,11 @@ git clone https://github.com/comfyanonymous/ComfyUI.git
 cd ComfyUI
 pip install -r requirements.txt
 
-# Required environment variables
-export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0
-export PYTORCH_ENABLE_MPS_FALLBACK=1
-
 # For FP8 models (FLUX, SD3.5):
-# Install fp8-mps-metal and add to ComfyUI's startup
-pip install -e /path/to/fp8-mps-metal
-# Add to ComfyUI/main.py or a custom node:
-import fp8_mps_patch; fp8_mps_patch.install()
+# Install fp8-mps-metal custom node (automatically sets PYTORCH_ENABLE_MPS_FALLBACK=1)
+cd custom_nodes
+git clone https://github.com/audiohacking/fp8-mps-metal.git
+cd ..
 
 # Run with memory optimizations
 python main.py --force-fp16 --use-split-cross-attention
@@ -381,6 +379,67 @@ These numbers are from our validated test suite. Your results will vary by chip.
 - PyTorch 2.4+ (for `torch._scaled_mm`), 2.10+ recommended (for `torch.mps.compile_shader`)
 - Python 3.10+
 - **No Xcode required** (runtime shader compilation)
+
+## Troubleshooting
+
+### For ComfyUI Users
+
+This extension automatically selects the best available backend:
+- **Native backend** (PyTorch 2.10+) - Zero-copy, fastest
+- **C++ extension fallback** (PyTorch 2.4+) - Requires compilation but works with older PyTorch
+
+When you start ComfyUI, check the console output to see which backend is active.
+
+#### "No FP8 backend available" Error
+
+If you see this error, you have PyTorch < 2.10 and need to build the C++ extension:
+
+**Option 1: Build the Extension (Recommended for ComfyUI)**
+```bash
+# Navigate to the custom node directory
+cd ComfyUI/custom_nodes/fp8-mps-metal/
+
+# Install Xcode Command Line Tools (if not already installed)
+xcode-select --install
+
+# Build and install the C++ extension
+pip install -e .
+
+# Restart ComfyUI
+```
+
+**Option 2: Upgrade PyTorch (If you manage your own environment)**
+```bash
+pip install --upgrade torch torchvision
+```
+
+Note: ComfyUI may manage its own PyTorch installation, so Option 1 is usually better.
+
+### For Other Users
+
+#### AttributeError: module 'torch.mps' has no attribute 'compile_shader'
+
+This error means you have PyTorch < 2.10. The library will automatically fall back to the C++ extension if available.
+
+**Solution 1: Upgrade PyTorch (Recommended)**
+```bash
+pip install --upgrade torch torchvision
+```
+
+**Solution 2: Build C++ Extension**
+```bash
+cd /path/to/fp8-mps-metal
+pip install -e .
+```
+
+The C++ extension provides similar functionality but uses metal-cpp and pybind11 instead of the native PyTorch API.
+
+### Build Requirements for C++ Extension
+
+- **Xcode Command Line Tools**: `xcode-select --install`
+- **metal-cpp**: Auto-downloaded during build
+- **PyTorch**: 2.4+ (for `torch._scaled_mm`)
+- **Python**: 3.10+
 
 ## Related Resources
 
