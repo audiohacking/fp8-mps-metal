@@ -24,32 +24,49 @@ def test_environment_variable():
     print("TEST 1: Environment Variable Configuration")
     print("=" * 70)
     
-    # Unset the variable first if it exists
-    if "PYTORCH_ENABLE_MPS_FALLBACK" in os.environ:
-        del os.environ["PYTORCH_ENABLE_MPS_FALLBACK"]
+    # Store original value if it exists
+    original_value = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
     
-    # Install the patch
-    if fp8_mps_patch.is_installed():
-        fp8_mps_patch.uninstall()
-    
-    fp8_mps_patch.install()
-    
-    # Check that the environment variable is set
-    fallback_enabled = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
-    
-    if fallback_enabled == "1":
-        print("✓ PYTORCH_ENABLE_MPS_FALLBACK is correctly set to '1'")
-    else:
-        print(f"✗ PYTORCH_ENABLE_MPS_FALLBACK is '{fallback_enabled}', expected '1'")
-        return False
-    
-    # Verify that the patch state is correctly maintained
-    if fp8_mps_patch.is_installed():
-        print("✓ Patch state correctly maintained (is_installed returns True)")
-        return True
-    else:
-        print("✗ Patch state not maintained (is_installed returns False after installation)")
-        return False
+    try:
+        # Unset the variable first if it exists
+        if "PYTORCH_ENABLE_MPS_FALLBACK" in os.environ:
+            del os.environ["PYTORCH_ENABLE_MPS_FALLBACK"]
+        
+        # Uninstall first if already installed
+        if fp8_mps_patch.is_installed():
+            fp8_mps_patch.uninstall()
+            # Verify uninstallation succeeded
+            if not fp8_mps_patch.is_installed():
+                print("✓ Patch successfully uninstalled before test")
+            else:
+                print("✗ Failed to uninstall patch before test")
+                return False
+        
+        # Install the patch
+        fp8_mps_patch.install()
+        
+        # Check that the environment variable is set
+        fallback_enabled = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
+        
+        if fallback_enabled == "1":
+            print("✓ PYTORCH_ENABLE_MPS_FALLBACK is correctly set to '1'")
+        else:
+            print(f"✗ PYTORCH_ENABLE_MPS_FALLBACK is '{fallback_enabled}', expected '1'")
+            return False
+        
+        # Verify that the patch state is correctly maintained
+        if fp8_mps_patch.is_installed():
+            print("✓ Patch state correctly maintained (is_installed returns True)")
+            return True
+        else:
+            print("✗ Patch state not maintained (is_installed returns False after installation)")
+            return False
+    finally:
+        # Restore original environment variable value
+        if original_value is not None:
+            os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = original_value
+        elif "PYTORCH_ENABLE_MPS_FALLBACK" in os.environ:
+            del os.environ["PYTORCH_ENABLE_MPS_FALLBACK"]
 
 
 def test_vae_patch_installation():

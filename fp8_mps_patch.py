@@ -308,18 +308,26 @@ def patch_vae_decode_for_mps_limits():
     
     def patched_decode(self, samples_in, disable_patcher=False, **kwargs):
         # Check if samples are huge and on MPS
-        if hasattr(samples_in, 'device') and samples_in.device.type == 'mps':
+        if hasattr(samples_in, 'device') and hasattr(samples_in, 'numel') and samples_in.device.type == 'mps':
             numel = samples_in.numel()
             # Check against the conservative threshold
             if numel > MPS_TENSOR_SIZE_THRESHOLD:
                 print(f"[fp8-mps-metal] VAE decode tensor too large for MPS ({numel:,} elements), falling back to CPU")
                 
                 # Store original device settings to restore after decode
+                # Try multiple methods to detect the model's current device
+                original_model_device = None
                 try:
+                    # Method 1: Check parameters
                     original_model_device = next(self.first_stage_model.parameters()).device
                 except StopIteration:
-                    # Model has no parameters, use MPS as default
-                    original_model_device = torch.device('mps')
+                    # Method 2: Check buffers if no parameters
+                    try:
+                        original_model_device = next(self.first_stage_model.buffers()).device
+                    except StopIteration:
+                        # Method 3: Use the output device as fallback
+                        original_model_device = self.output_device if hasattr(self, 'output_device') else torch.device('mps')
+                
                 original_output_device = self.output_device
                 
                 # Move to CPU for decode (in-place operation for nn.Module)
