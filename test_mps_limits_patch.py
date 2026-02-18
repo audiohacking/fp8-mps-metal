@@ -39,9 +39,16 @@ def test_environment_variable():
     
     if fallback_enabled == "1":
         print("✓ PYTORCH_ENABLE_MPS_FALLBACK is correctly set to '1'")
-        return True
     else:
         print(f"✗ PYTORCH_ENABLE_MPS_FALLBACK is '{fallback_enabled}', expected '1'")
+        return False
+    
+    # Verify that the patch state is correctly maintained
+    if fp8_mps_patch.is_installed():
+        print("✓ Patch state correctly maintained (is_installed returns True)")
+        return True
+    else:
+        print("✗ Patch state not maintained (is_installed returns False after installation)")
         return False
 
 

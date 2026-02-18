@@ -303,12 +303,30 @@ def patch_vae_decode_for_mps_limits():
         # Check if samples are huge and on MPS
         if hasattr(samples_in, 'device') and samples_in.device.type == 'mps':
             numel = samples_in.numel()
-            # If tensor has >100M elements, move to CPU to avoid MPS INT_MAX limit
+            # MPS has a hard limit at INT_MAX (~2.1B elements) for tensor dimensions
+            # We use a conservative threshold of 100M elements to avoid edge cases and 
+            # provide a safety margin, as the actual failure point may vary based on 
+            # tensor shape and operations performed during decode
             if numel > 100_000_000:
                 print(f"[fp8-mps-metal] VAE decode tensor too large for MPS ({numel:,} elements), falling back to CPU")
+                
+                # Store original device settings to restore after decode
+                original_model_device = next(self.first_stage_model.parameters()).device
+                original_output_device = self.output_device
+                
+                # Move to CPU for decode
                 samples_in = samples_in.to('cpu')
                 self.first_stage_model = self.first_stage_model.to('cpu')
                 self.output_device = torch.device('cpu')
+                
+                # Perform decode on CPU
+                result = original_decode(self, samples_in, disable_patcher=disable_patcher, **kwargs)
+                
+                # Restore original device settings for future operations
+                self.first_stage_model = self.first_stage_model.to(original_model_device)
+                self.output_device = original_output_device
+                
+                return result
         
         return original_decode(self, samples_in, disable_patcher=disable_patcher, **kwargs)
     
