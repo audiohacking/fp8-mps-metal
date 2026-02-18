@@ -84,11 +84,12 @@ def test_large_tensor_detection():
     print("TEST 3: Large Tensor Detection Logic")
     print("=" * 70)
     
-    # Test the threshold logic
-    threshold = 100_000_000
+    # Test the threshold logic using the constant from the module
+    threshold = fp8_mps_patch.MPS_TENSOR_SIZE_THRESHOLD
+    print(f"  Using threshold: {threshold:,} elements")
     
     # Small tensor (should not trigger fallback)
-    small_numel = 50_000_000
+    small_numel = threshold // 2  # Half the threshold
     if small_numel <= threshold:
         print(f"✓ Small tensor ({small_numel:,} elements) correctly identified as below threshold")
     else:
@@ -96,7 +97,7 @@ def test_large_tensor_detection():
         return False
     
     # Large tensor (should trigger fallback)
-    large_numel = 150_000_000
+    large_numel = threshold + 50_000_000  # Significantly above threshold
     if large_numel > threshold:
         print(f"✓ Large tensor ({large_numel:,} elements) correctly identified as above threshold")
     else:
