@@ -24,10 +24,12 @@ except ImportError:
 
 # MPS tensor size limit threshold for VAE decode
 # MPS has a hard limit at INT_MAX (~2.1B elements) for tensor dimensions
-# We use a conservative threshold of 100M elements to avoid edge cases and 
-# provide a safety margin, as the actual failure point may vary based on 
-# tensor shape and operations performed during decode
-MPS_TENSOR_SIZE_THRESHOLD = 100_000_000
+# We use a threshold of 15M elements for output tensors to balance performance and safety:
+# - Below 15M (e.g., 1024×1024): Pass through to MPS directly (no tiling overhead)
+# - 15M to 75M (e.g., 2048×2048, 4096×4096): Use tiled decode on MPS (efficient GPU)
+# - Above 75M (e.g., 8192×8192): Fall back to CPU (avoid potential MPS limits)
+# This ensures 2048×2048 images (~16.7M output) are properly tiled for stability
+MPS_TENSOR_SIZE_THRESHOLD = 15_000_000
 
 # VAE decode upscaling factor: 8x per spatial dimension = 64x total volume
 # E.g., (1, 4, 128, 128) input -> (1, 3, 1024, 1024) output
