@@ -11,7 +11,16 @@ FLUX/SD3.5 FP8 scaled_mm calls will transparently use Metal GPU.
 Float8_e4m3fn conversions on MPS will automatically use our quantization kernel.
 """
 
+import os
 import torch
+
+# Try to import ComfyUI's comfy.sd module for VAE patching
+# This will fail gracefully if not running in ComfyUI environment
+try:
+    import comfy.sd
+    _COMFY_AVAILABLE = True
+except ImportError:
+    _COMFY_AVAILABLE = False
 
 _original_scaled_mm = None
 _original_tensor_to = None
@@ -280,11 +289,43 @@ def _metal_tensor_copy(self, src, non_blocking=False):
     return _original_tensor_copy(self, src, non_blocking=non_blocking)
 
 
+def patch_vae_decode_for_mps_limits():
+    """Force large VAE decodes to CPU to avoid MPS INT_MAX tensor size limit"""
+    if not _COMFY_AVAILABLE:
+        print("[fp8-mps-metal] ComfyUI not available, skipping VAE decode patch")
+        return
+    
+    import comfy.sd
+    
+    original_decode = comfy.sd.VAE.decode
+    
+    def patched_decode(self, samples_in, disable_patcher=False, **kwargs):
+        # Check if samples are huge and on MPS
+        if hasattr(samples_in, 'device') and samples_in.device.type == 'mps':
+            numel = samples_in.numel()
+            # If tensor has >100M elements, move to CPU to avoid MPS INT_MAX limit
+            if numel > 100_000_000:
+                print(f"[fp8-mps-metal] VAE decode tensor too large for MPS ({numel:,} elements), falling back to CPU")
+                samples_in = samples_in.to('cpu')
+                self.first_stage_model = self.first_stage_model.to('cpu')
+                self.output_device = torch.device('cpu')
+        
+        return original_decode(self, samples_in, disable_patcher=disable_patcher, **kwargs)
+    
+    comfy.sd.VAE.decode = patched_decode
+    print("[fp8-mps-metal] VAE decode patch installed for MPS tensor size limits")
+
+
 def install():
     """Monkey-patch torch._scaled_mm, Tensor.to(), and Tensor.copy_() to use Metal FP8 kernels on MPS."""
     global _original_scaled_mm, _original_tensor_to, _original_tensor_copy, _installed
     if _installed:
         return
+    
+    # Set PYTORCH_ENABLE_MPS_FALLBACK=1 to handle any uncaught exceptions
+    # This allows PyTorch to automatically fall back to CPU for unsupported MPS operations
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+    print("[fp8-mps-metal] Set PYTORCH_ENABLE_MPS_FALLBACK=1 for automatic CPU fallback")
 
     if hasattr(torch, "_scaled_mm"):
         _original_scaled_mm = torch._scaled_mm
@@ -299,6 +340,9 @@ def install():
     # Patch Tensor.copy_() for FP8 tensor copies to MPS
     _original_tensor_copy = torch.Tensor.copy_
     torch.Tensor.copy_ = _metal_tensor_copy
+    
+    # Patch VAE.decode for MPS tensor size limits
+    patch_vae_decode_for_mps_limits()
     
     _installed = True
 

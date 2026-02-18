@@ -34,6 +34,8 @@ try:
         print("  • FP8 quantization on MPS")
         print("  • FP8 stochastic rounding (.copy_() operations)")
         print("  • FP8 matrix multiplication via Metal kernels")
+        print("  • Large VAE tensor handling (automatic CPU fallback)")
+        print("  • MPS fallback for unsupported operations")
         print("=" * 70 + "\n")
     else:
         print("[fp8-mps-metal] Patch already installed")
