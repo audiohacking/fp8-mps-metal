@@ -376,7 +376,7 @@ def patch_vae_decode_for_mps_limits():
     
     original_decode = comfy.sd.VAE.decode
     
-    def patched_decode(self, samples_in, disable_patcher=False, **kwargs):
+    def patched_decode(self, samples_in, **kwargs):
         # Check if samples are on MPS and potentially problematic
         if hasattr(samples_in, 'device') and hasattr(samples_in, 'numel') and samples_in.device.type == 'mps':
             numel = samples_in.numel()
@@ -401,7 +401,7 @@ def patch_vae_decode_for_mps_limits():
                 decoded_tiles = []
                 for i, tile in enumerate(tiles):
                     print(f"[fp8-mps-metal]   Decoding tile {i+1}/{len(tiles)} ({tile.numel():,} elements)")
-                    decoded_tile = original_decode(self, tile, disable_patcher=disable_patcher, **kwargs)
+                    decoded_tile = original_decode(self, tile, **kwargs)
                     decoded_tiles.append(decoded_tile)
                 
                 # Reconstruct full output from tiles
@@ -425,7 +425,7 @@ def patch_vae_decode_for_mps_limits():
                 self.output_device = torch.device('cpu')
                 
                 # Perform decode on CPU
-                result = original_decode(self, samples_in, disable_patcher=disable_patcher, **kwargs)
+                result = original_decode(self, samples_in, **kwargs)
                 
                 # Restore original device settings
                 self.first_stage_model.to(original_model_device)
@@ -434,7 +434,7 @@ def patch_vae_decode_for_mps_limits():
                 return result
         
         # Default path: normal decode (small tensors or non-MPS)
-        return original_decode(self, samples_in, disable_patcher=disable_patcher, **kwargs)
+        return original_decode(self, samples_in, **kwargs)
     
     comfy.sd.VAE.decode = patched_decode
     print("[fp8-mps-metal] VAE decode patch installed with intelligent tiling for MPS tensor size limits")
