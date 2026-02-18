@@ -11,7 +11,27 @@ FLUX/SD3.5 FP8 scaled_mm calls will transparently use Metal GPU.
 Float8_e4m3fn conversions on MPS will automatically use our quantization kernel.
 """
 
+import os
 import torch
+
+# Try to import ComfyUI's comfy.sd module for VAE patching
+# This will fail gracefully if not running in ComfyUI environment
+try:
+    import comfy.sd
+    _COMFY_AVAILABLE = True
+except ImportError:
+    _COMFY_AVAILABLE = False
+
+# MPS tensor size limit threshold for VAE decode
+# MPS has a hard limit at INT_MAX (~2.1B elements) for tensor dimensions
+# We use a conservative threshold of 100M elements to avoid edge cases and 
+# provide a safety margin, as the actual failure point may vary based on 
+# tensor shape and operations performed during decode
+MPS_TENSOR_SIZE_THRESHOLD = 100_000_000
+
+# VAE decode upscaling factor: 8x per spatial dimension = 64x total volume
+# E.g., (1, 4, 128, 128) input -> (1, 3, 1024, 1024) output
+VAE_UPSCALE_FACTOR = 64
 
 _original_scaled_mm = None
 _original_tensor_to = None
@@ -280,11 +300,154 @@ def _metal_tensor_copy(self, src, non_blocking=False):
     return _original_tensor_copy(self, src, non_blocking=non_blocking)
 
 
+def _tile_tensor_spatial(tensor, max_tile_size):
+    """
+    Tile a 4D tensor (B, C, H, W) along spatial H dimension to stay within size limit.
+    Returns list of tiles and metadata for reconstruction.
+    """
+    B, C, H, W = tensor.shape
+    tile_info = []
+    tiles = []
+    
+    # Calculate how many tiles we need along H dimension
+    elements_per_slice = B * C * H * W
+    target_h = H
+    
+    # Split along H dimension if needed
+    if elements_per_slice > max_tile_size:
+        # Calculate how many H-splits we need
+        num_h_splits = (elements_per_slice + max_tile_size - 1) // max_tile_size
+        target_h = (H + num_h_splits - 1) // num_h_splits
+        
+        for h_start in range(0, H, target_h):
+            h_end = min(h_start + target_h, H)
+            tile = tensor[:, :, h_start:h_end, :]
+            tiles.append(tile)
+            tile_info.append({'h_start': h_start, 'h_end': h_end})
+    else:
+        tiles = [tensor]
+        tile_info = [{'h_start': 0, 'h_end': H}]
+    
+    return tiles, tile_info
+
+
+def _reconstruct_from_tiles(tiles, tile_info, scale_factor=8):
+    """
+    Reconstruct full tensor from tiles after VAE decode.
+    Handles upscaling that happens during decode.
+    """
+    if len(tiles) == 1:
+        return tiles[0]
+    
+    # Concatenate along H dimension (accounting for upscaling)
+    return torch.cat(tiles, dim=2)
+
+
+def _get_model_device(model, fallback_device):
+    """
+    Detect the device of a PyTorch model.
+    Tries parameters first, then buffers, then returns fallback.
+    """
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        try:
+            return next(model.buffers()).device
+        except StopIteration:
+            return fallback_device
+
+
+def patch_vae_decode_for_mps_limits():
+    """
+    Intelligently handle large VAE decodes on MPS using tiling strategy.
+    
+    Strategy hierarchy:
+    1. Small tensors (< 100M elements): Pass through to MPS unchanged
+    2. Large tensors (> 100M elements): Tile spatially and decode tiles on MPS
+    3. Extremely large tensors: Fall back to CPU if tiling still exceeds limits
+    """
+    if not _COMFY_AVAILABLE:
+        print("[fp8-mps-metal] ComfyUI not available, skipping VAE decode patch")
+        return
+    
+    import comfy.sd
+    
+    original_decode = comfy.sd.VAE.decode
+    
+    def patched_decode(self, samples_in, disable_patcher=False, **kwargs):
+        # Check if samples are on MPS and potentially problematic
+        if hasattr(samples_in, 'device') and hasattr(samples_in, 'numel') and samples_in.device.type == 'mps':
+            numel = samples_in.numel()
+            
+            # VAE decode typically upscales by 8x in each spatial dimension (64x total volume)
+            # E.g., (1, 4, 128, 128) input -> (1, 3, 1024, 1024) output
+            # Input: 65K elements -> Output: 3.1M elements
+            # But intermediate tensors during decode can be much larger!
+            output_estimate = numel * VAE_UPSCALE_FACTOR  # Conservative estimate for largest intermediate tensor
+            
+            # Strategy 1: Try tiled decode on MPS (most efficient) for large tensors
+            if output_estimate > MPS_TENSOR_SIZE_THRESHOLD and len(samples_in.shape) == 4:
+                print(f"[fp8-mps-metal] VAE decode tensor large ({numel:,} elements), using tiled decode on MPS")
+                print(f"[fp8-mps-metal]   Estimated max intermediate size: {output_estimate:,} elements")
+                
+                # Tile input into smaller chunks (targeting 50M elements per output tile)
+                # Since output is VAE_UPSCALE_FACTOR larger, calculate appropriate input tile size
+                target_input_tile_size = MPS_TENSOR_SIZE_THRESHOLD // VAE_UPSCALE_FACTOR
+                tiles, tile_info = _tile_tensor_spatial(samples_in, target_input_tile_size)
+                
+                # Decode each tile independently on MPS
+                decoded_tiles = []
+                for i, tile in enumerate(tiles):
+                    print(f"[fp8-mps-metal]   Decoding tile {i+1}/{len(tiles)} ({tile.numel():,} elements)")
+                    decoded_tile = original_decode(self, tile, disable_patcher=disable_patcher, **kwargs)
+                    decoded_tiles.append(decoded_tile)
+                
+                # Reconstruct full output from tiles
+                result = _reconstruct_from_tiles(decoded_tiles, tile_info)
+                print(f"[fp8-mps-metal] Tiled decode complete, output shape: {result.shape}")
+                return result
+            
+            # Strategy 2: Last resort - CPU fallback for extremely large tensors
+            # This handles edge cases where tiling might still fail or tensor isn't 4D
+            elif output_estimate > MPS_TENSOR_SIZE_THRESHOLD * 5:
+                print(f"[fp8-mps-metal] VAE decode tensor extremely large ({numel:,} elements), falling back to CPU")
+                
+                # Store original device settings
+                fallback_device = self.output_device if hasattr(self, 'output_device') else torch.device('mps')
+                original_model_device = _get_model_device(self.first_stage_model, fallback_device)
+                original_output_device = self.output_device
+                
+                # Move to CPU for decode
+                samples_in = samples_in.to('cpu')
+                self.first_stage_model.to('cpu')
+                self.output_device = torch.device('cpu')
+                
+                # Perform decode on CPU
+                result = original_decode(self, samples_in, disable_patcher=disable_patcher, **kwargs)
+                
+                # Restore original device settings
+                self.first_stage_model.to(original_model_device)
+                self.output_device = original_output_device
+                
+                return result
+        
+        # Default path: normal decode (small tensors or non-MPS)
+        return original_decode(self, samples_in, disable_patcher=disable_patcher, **kwargs)
+    
+    comfy.sd.VAE.decode = patched_decode
+    print("[fp8-mps-metal] VAE decode patch installed with intelligent tiling for MPS tensor size limits")
+
+
 def install():
     """Monkey-patch torch._scaled_mm, Tensor.to(), and Tensor.copy_() to use Metal FP8 kernels on MPS."""
     global _original_scaled_mm, _original_tensor_to, _original_tensor_copy, _installed
     if _installed:
         return
+    
+    # Set PYTORCH_ENABLE_MPS_FALLBACK=1 to handle any uncaught exceptions
+    # This allows PyTorch to automatically fall back to CPU for unsupported MPS operations
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+    print("[fp8-mps-metal] Set PYTORCH_ENABLE_MPS_FALLBACK=1 for automatic CPU fallback")
 
     if hasattr(torch, "_scaled_mm"):
         _original_scaled_mm = torch._scaled_mm
@@ -299,6 +462,9 @@ def install():
     # Patch Tensor.copy_() for FP8 tensor copies to MPS
     _original_tensor_copy = torch.Tensor.copy_
     torch.Tensor.copy_ = _metal_tensor_copy
+    
+    # Patch VAE.decode for MPS tensor size limits
+    patch_vae_decode_for_mps_limits()
     
     _installed = True
 
