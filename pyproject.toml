@@ -2,7 +2,7 @@
 [project]
 name = "fp8-mps-metal" # Unique identifier for your node. Immutable after creation.
 description = "Custom FP8 compute kernels for Apple Silicon (MPS)"
-version = "0.0.1" # Custom Node version. Must be semantically versioned.
+version = "0.0.2" # Custom Node version. Must be semantically versioned.
 license = { file = "LICENSE.txt" }
 dependencies  = [] # Filled in from requirements.txt
 
