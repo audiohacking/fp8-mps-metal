@@ -25,8 +25,8 @@ def test_environment_variable():
     print("=" * 70)
     
     # Store original value if it exists (use sentinel to distinguish None from missing)
-    _MISSING = object()
-    original_value = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", _MISSING)
+    SENTINEL = object()
+    original_value = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", SENTINEL)
     
     try:
         # Unset the variable first if it exists
@@ -64,7 +64,7 @@ def test_environment_variable():
             return False
     finally:
         # Restore original environment variable value
-        if original_value is not _MISSING:
+        if original_value is not SENTINEL:
             os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = original_value
         elif "PYTORCH_ENABLE_MPS_FALLBACK" in os.environ:
             del os.environ["PYTORCH_ENABLE_MPS_FALLBACK"]

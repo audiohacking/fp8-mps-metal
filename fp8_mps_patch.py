@@ -29,6 +29,10 @@ except ImportError:
 # tensor shape and operations performed during decode
 MPS_TENSOR_SIZE_THRESHOLD = 100_000_000
 
+# VAE decode upscaling factor: 8x per spatial dimension = 64x total volume
+# E.g., (1, 4, 128, 128) input -> (1, 3, 1024, 1024) output
+VAE_UPSCALE_FACTOR = 64
+
 _original_scaled_mm = None
 _original_tensor_to = None
 _original_tensor_copy = None
@@ -298,20 +302,18 @@ def _metal_tensor_copy(self, src, non_blocking=False):
 
 def _tile_tensor_spatial(tensor, max_tile_size):
     """
-    Tile a 4D tensor (B, C, H, W) along spatial dimensions to stay within size limit.
+    Tile a 4D tensor (B, C, H, W) along spatial H dimension to stay within size limit.
     Returns list of tiles and metadata for reconstruction.
     """
     B, C, H, W = tensor.shape
     tile_info = []
     tiles = []
     
-    # Calculate how many tiles we need along each spatial dimension
-    # Aim for square-ish tiles for better memory access patterns
+    # Calculate how many tiles we need along H dimension
     elements_per_slice = B * C * H * W
     target_h = H
-    target_w = W
     
-    # Simple strategy: split along H dimension if needed
+    # Split along H dimension if needed
     if elements_per_slice > max_tile_size:
         # Calculate how many H-splits we need
         num_h_splits = (elements_per_slice + max_tile_size - 1) // max_tile_size
@@ -339,6 +341,20 @@ def _reconstruct_from_tiles(tiles, tile_info, scale_factor=8):
     
     # Concatenate along H dimension (accounting for upscaling)
     return torch.cat(tiles, dim=2)
+
+
+def _get_model_device(model, fallback_device):
+    """
+    Detect the device of a PyTorch model.
+    Tries parameters first, then buffers, then returns fallback.
+    """
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        try:
+            return next(model.buffers()).device
+        except StopIteration:
+            return fallback_device
 
 
 def patch_vae_decode_for_mps_limits():
@@ -397,15 +413,8 @@ def patch_vae_decode_for_mps_limits():
                 print(f"[fp8-mps-metal] VAE decode tensor extremely large ({numel:,} elements), falling back to CPU")
                 
                 # Store original device settings
-                original_model_device = None
-                try:
-                    original_model_device = next(self.first_stage_model.parameters()).device
-                except StopIteration:
-                    try:
-                        original_model_device = next(self.first_stage_model.buffers()).device
-                    except StopIteration:
-                        original_model_device = self.output_device if hasattr(self, 'output_device') else torch.device('mps')
-                
+                fallback_device = self.output_device if hasattr(self, 'output_device') else torch.device('mps')
+                original_model_device = _get_model_device(self.first_stage_model, fallback_device)
                 original_output_device = self.output_device
                 
                 # Move to CPU for decode
