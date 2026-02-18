@@ -24,8 +24,9 @@ def test_environment_variable():
     print("TEST 1: Environment Variable Configuration")
     print("=" * 70)
     
-    # Store original value if it exists
-    original_value = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
+    # Store original value if it exists (use sentinel to distinguish None from missing)
+    _MISSING = object()
+    original_value = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", _MISSING)
     
     try:
         # Unset the variable first if it exists
@@ -36,11 +37,11 @@ def test_environment_variable():
         if fp8_mps_patch.is_installed():
             fp8_mps_patch.uninstall()
             # Verify uninstallation succeeded
-            if not fp8_mps_patch.is_installed():
-                print("✓ Patch successfully uninstalled before test")
-            else:
+            if fp8_mps_patch.is_installed():
                 print("✗ Failed to uninstall patch before test")
                 return False
+            else:
+                print("✓ Patch successfully uninstalled before test")
         
         # Install the patch
         fp8_mps_patch.install()
@@ -63,7 +64,7 @@ def test_environment_variable():
             return False
     finally:
         # Restore original environment variable value
-        if original_value is not None:
+        if original_value is not _MISSING:
             os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = original_value
         elif "PYTORCH_ENABLE_MPS_FALLBACK" in os.environ:
             del os.environ["PYTORCH_ENABLE_MPS_FALLBACK"]
