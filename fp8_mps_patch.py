@@ -383,7 +383,7 @@ def patch_vae_decode_for_mps_limits():
             # E.g., (1, 4, 128, 128) input -> (1, 3, 1024, 1024) output
             # Input: 65K elements -> Output: 3.1M elements
             # But intermediate tensors during decode can be much larger!
-            output_estimate = numel * 64  # Conservative estimate for largest intermediate tensor
+            output_estimate = numel * VAE_UPSCALE_FACTOR  # Conservative estimate for largest intermediate tensor
             
             # Strategy 1: Try tiled decode on MPS (most efficient) for large tensors
             if output_estimate > MPS_TENSOR_SIZE_THRESHOLD and len(samples_in.shape) == 4:
@@ -391,8 +391,8 @@ def patch_vae_decode_for_mps_limits():
                 print(f"[fp8-mps-metal]   Estimated max intermediate size: {output_estimate:,} elements")
                 
                 # Tile input into smaller chunks (targeting 50M elements per output tile)
-                # Since output is ~64x larger, input tiles should be ~781K elements
-                target_input_tile_size = MPS_TENSOR_SIZE_THRESHOLD // 64
+                # Since output is VAE_UPSCALE_FACTOR larger, calculate appropriate input tile size
+                target_input_tile_size = MPS_TENSOR_SIZE_THRESHOLD // VAE_UPSCALE_FACTOR
                 tiles, tile_info = _tile_tensor_spatial(samples_in, target_input_tile_size)
                 
                 # Decode each tile independently on MPS
